@@ -58,8 +58,8 @@ def load_file(file):
 # ==========================================
 with tab1:
     st.title("🗺️ The Consumer Landscape")
+    col_nav, col_main = st.columns([1, 4])
     
-    # --- SIDEBAR (STRUCTURED) ---
     with st.sidebar:
         # 1. LOAD / SAVE / IMPORT
         st.header("📂 Data & Projects")
@@ -134,6 +134,7 @@ with tab1:
             # Process Core
             df_raw = load_file(uploaded_file)
             df_math = clean_df(df_raw)
+            # Remove all-zero rows/cols from map
             df_math = df_math.loc[(df_math != 0).any(axis=1)] 
             df_math = df_math.loc[:, (df_math != 0).any(axis=0)]
             
@@ -176,30 +177,21 @@ with tab1:
                         p_df = load_file(cfg["file"])
                         p_clean = clean_df(p_df)
                         
-                        # PRE-CALC MODES
-                        # Determine if we are mapping Rows or Columns
-                        # If user says Auto, we check overlap counts
-                        
-                        # Overlap Checks
                         common_brands = list(set(p_clean.columns) & set(df_math.columns))
                         common_attrs = list(set(p_clean.index) & set(df_math.index))
                         
-                        user_mode = cfg["mode"]
+                        # Determine Mode
                         is_rows = False
-                        
-                        if user_mode == "Rows (Stars)": is_rows = True
-                        elif user_mode == "Columns (Diamonds)": is_rows = False
+                        if cfg["mode"] == "Rows (Stars)": is_rows = True
+                        elif cfg["mode"] == "Columns (Diamonds)": is_rows = False
                         else: is_rows = True if len(common_brands) > len(common_attrs) else False
                         
-                        # --- DE-DUPLICATION LOGIC ---
+                        # --- DE-DUPLICATION ---
                         if is_rows:
-                            # 1. Filter: Keep only NEW Rows
                             unique_rows = [r for r in p_clean.index if r not in df_math.index]
                             p_clean = p_clean.loc[unique_rows]
+                            if p_clean.empty: continue
                             
-                            if p_clean.empty: continue # Nothing new to map
-                            
-                            # 2. Map
                             if len(common_brands) > 0:
                                 p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
@@ -211,13 +203,10 @@ with tab1:
                                 res['Visible'] = cfg["show"]
                                 passive_layer_data.append(res)
                         else:
-                            # 1. Filter: Keep only NEW Columns
                             unique_cols = [c for c in p_clean.columns if c not in df_math.columns]
                             p_clean = p_clean[unique_cols]
+                            if p_clean.empty: continue
                             
-                            if p_clean.empty: continue # Nothing new to map
-                            
-                            # 2. Map
                             if len(common_attrs) > 0:
                                 p_aligned = p_clean.reindex(df_math.index).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
@@ -239,13 +228,11 @@ with tab1:
         df_attrs = st.session_state.df_attrs
         passive_layer_data = st.session_state.passive_data
         
-        # --- POPULATE FILTERS (Using the placeholder) ---
+        # --- POPULATE FILTERS ---
         with placeholder_filters.container():
-            # Spotlight
             all_b_labels = sorted(df_brands['Label'].tolist())
             focus_brand = st.selectbox("Highlight Column:", ["None"] + all_b_labels)
             
-            # Base Filters
             with st.expander("Filter Base Map", expanded=False):
                 if not st.checkbox("All Columns", True, key="f_all_cols"):
                     sel_brands = st.multiselect("Select Columns:", all_b_labels, default=all_b_labels, key="f_sel_cols")
@@ -256,7 +243,6 @@ with tab1:
                     sel_attrs = st.multiselect("Select Rows:", all_a_labels, default=all_a_labels[:10], key="f_sel_rows")
                 else: sel_attrs = all_a_labels
             
-            # Passive Filters
             for i, layer in enumerate(passive_layer_data):
                 if not layer.empty and layer['Visible'].iloc[0]:
                     with st.expander(f"Filter {layer['LayerName'].iloc[0]}", expanded=False):
@@ -275,13 +261,13 @@ with tab1:
             if not hero.empty:
                 hx, hy = hero.iloc[0]['x'], hero.iloc[0]['y']
                 
-                # Top 5 Base Rows
+                # Base Rows
                 if show_base_rows:
                     active_attrs = df_attrs[df_attrs['Label'].isin(sel_attrs)].copy()
                     active_attrs['D'] = np.sqrt((active_attrs['x']-hx)**2 + (active_attrs['y']-hy)**2)
                     highlight_list += active_attrs.sort_values('D').head(5)['Label'].tolist()
                 
-                # Top 5 Passive Items
+                # Passive Items
                 for layer in passive_layer_data:
                     if not layer.empty and layer['Visible'].iloc[0]:
                         l_copy = layer.copy()
@@ -370,17 +356,14 @@ with tab2:
     else:
         def analyze_query(query):
             q, df_b, df_a = query.lower(), st.session_state.df_brands, st.session_state.df_attrs
-            
             if "theme" in q or "axis" in q:
                 xm, xn = df_a.loc[df_a['x'].idxmax()]['Label'], df_a.loc[df_a['x'].idxmin()]['Label']
                 ym, yn = df_a.loc[df_a['y'].idxmax()]['Label'], df_a.loc[df_a['y'].idxmin()]['Label']
                 return f"**Themes:**\n* ↔️ **X-Axis:** {xn} to {xm}\n* ↕️ **Y-Axis:** {yn} to {ym}"
-
             if "white space" in q:
                 df_a['D'] = df_a.apply(lambda r: np.min(np.sqrt((df_b['x']-r['x'])**2 + (df_b['y']-r['y'])**2)), axis=1)
                 ws = df_a.sort_values('D', ascending=False).head(3)
                 return "**White Space:**\n" + "\n".join([f"* {r['Label']}" for _, r in ws.iterrows()])
-
             for b in df_b['Label']:
                 if b.lower() in q:
                     br = df_b[df_b['Label']==b].iloc[0]
@@ -412,12 +395,9 @@ with tab3:
         try:
             if raw_mri.name.endswith('.csv'): df_raw = pd.read_csv(raw_mri, header=None)
             else: df_raw = pd.read_excel(raw_mri, header=None)
-            
             metric_row_idx = -1
             for i, row in df_raw.iterrows():
-                if row.astype(str).str.contains("Weighted (000)", regex=False).any():
-                    metric_row_idx = i; break
-            
+                if row.astype(str).str.contains("Weighted (000)", regex=False).any(): metric_row_idx = i; break
             if metric_row_idx != -1:
                 brand_row = df_raw.iloc[metric_row_idx - 1]
                 metric_row = df_raw.iloc[metric_row_idx]
@@ -428,10 +408,20 @@ with tab3:
                         brand = str(brand_row[c-1])
                         if "Study Universe" not in brand and "Total" not in brand and brand != 'nan':
                             cols.append(c); headers.append(brand)
+                
                 df_clean = data_rows.iloc[:, cols]; df_clean.columns = headers
+                # 1. Clean Text
                 df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
+                # 2. Convert Data to Numeric
+                data_cols = df_clean.columns[1:]
+                for c in data_cols:
+                    df_clean[c] = pd.to_numeric(df_clean[c].astype(str).str.replace(',', ''), errors='coerce')
+                # 3. Drop Empty Rows (All NaNs in data columns)
+                df_clean = df_clean.dropna(subset=data_cols, how='all')
+                # 4. Filter Tags
                 df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
                 df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+                
                 st.success("Cleaned!")
                 st.download_button("Download CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
             else: st.error("Could not find 'Weighted (000)' row.")
