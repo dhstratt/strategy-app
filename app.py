@@ -25,7 +25,7 @@ st.markdown("""
         html, body, [class*="css"] { font-family: 'Nunito', sans-serif; }
         h1, h2, h3 { font-family: 'Nunito', sans-serif; font-weight: 800; }
         .stMetric { font-family: 'Nunito', sans-serif; }
-        .territory-card {
+        .mindset-card {
             padding: 20px;
             border-radius: 10px;
             border-left: 10px solid #ccc;
@@ -54,6 +54,7 @@ def clean_df(df):
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
     df = df.fillna(0)
+    # The Assassin: Kill Study Universe
     df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower() and "base" not in str(c).lower()]
     return df[valid_cols]
@@ -112,12 +113,12 @@ with tab1:
                     passive_configs.append({"file": p_file, "name": p_name, "show": p_show, "mode": p_mode})
         
         st.divider()
-        st.header("⚗️ Analysis")
-        enable_clustering = st.checkbox("Enable Territory Discovery", False)
+        st.header("⚗️ Mindset Maker")
+        enable_clustering = st.checkbox("Enable Mindset Discovery", False)
         num_clusters = 4
         if enable_clustering:
-            if HAS_SKLEARN: num_clusters = st.slider("Number of Territories", 2, 8, 4)
-            else: st.error("ML Library missing.")
+            if HAS_SKLEARN: num_clusters = st.slider("Number of Mindsets", 2, 8, 4)
+            else: st.error("ML Library missing. Add scikit-learn to requirements.txt")
         
         st.divider()
         st.header("🔍 Filter & Highlight")
@@ -170,8 +171,7 @@ with tab1:
                         is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else len(common_brands) > len(common_attrs)
                         
                         if is_rows:
-                            unique_rows = [r for r in p_clean.index if r not in df_math.index]
-                            p_clean = p_clean.loc[unique_rows]
+                            p_clean = p_clean.loc[[r for r in p_clean.index if r not in df_math.index]]
                             if not p_clean.empty and len(common_brands) > 0:
                                 p_prof = p_clean[common_brands].div(p_clean[common_brands].sum(axis=1).replace(0,1), axis=0)
                                 proj = p_prof.values @ col_coords[:, :2] / s[:2]
@@ -183,8 +183,7 @@ with tab1:
                                 res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                                 passive_layer_data.append(res)
                         else:
-                            unique_cols = [c for c in p_clean.columns if c not in df_math.columns]
-                            p_clean = p_clean[unique_cols]
+                            p_clean = p_clean[[c for c in p_clean.columns if c not in df_math.columns]]
                             if not p_clean.empty and len(common_attrs) > 0:
                                 p_prof = p_clean.reindex(df_math.index).div(p_clean.reindex(df_math.index).sum(axis=0).replace(0,1), axis=1)
                                 proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
@@ -206,8 +205,8 @@ with tab1:
         passive_layer_data = st.session_state.passive_data
         cluster_colors = px.colors.qualitative.Bold
         
-        # 1. Clustering Logic
-        territory_report = []
+        # 1. Mindset Logic
+        mindset_report = []
         if enable_clustering and HAS_SKLEARN:
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
             df_attrs['Cluster'] = kmeans.fit_predict(df_attrs[['x', 'y']])
@@ -219,7 +218,7 @@ with tab1:
                 cluster_rows['dist'] = np.sqrt((cluster_rows['x'] - centroids[i][0])**2 + (cluster_rows['y'] - centroids[i][1])**2)
                 top_rows = cluster_rows.sort_values('dist').head(5)['Label'].tolist()
                 top_brands = df_brands[df_brands['Cluster'] == i]['Label'].tolist()
-                territory_report.append({"id": i+1, "color": cluster_colors[i % len(cluster_colors)], "rows": top_rows, "brands": top_brands})
+                mindset_report.append({"id": i+1, "color": cluster_colors[i % len(cluster_colors)], "rows": top_rows, "brands": top_brands})
                 
             for layer in passive_layer_data:
                 if not layer.empty: layer['Cluster'] = kmeans.predict(layer[['x', 'y']])
@@ -291,7 +290,7 @@ with tab1:
                     bc = cluster_colors[cid % len(cluster_colors)]
                     res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
                     c_l, o_l = [r[0] for r in res], [r[1] for r in res]
-                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=7, color=c_l, opacity=o_l), text=sub['Label'], hoverinfo='text', name=f"Territory {cid+1}"))
+                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=7, color=c_l, opacity=o_l), text=sub['Label'], hoverinfo='text', name=f"Mindset {cid+1}"))
                     for _, r in sub.iterrows():
                         c, o = get_so(r['Label'], bc)
                         if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
@@ -311,7 +310,7 @@ with tab1:
                         bc = cluster_colors[cid % len(cluster_colors)]
                         res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
                         c_l, o_l = [r[0] for r in res], [r[1] for r in res]
-                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=9, symbol=sub['Shape'].iloc[0], color=c_l, opacity=o_l, line=dict(width=1, color='white')), text=sub['Label'], hoverinfo='text', name=f"{sub['LayerName'].iloc[0]} (T{cid+1})", showlegend=False))
+                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=9, symbol=sub['Shape'].iloc[0], color=c_l, opacity=o_l, line=dict(width=1, color='white')), text=sub['Label'], hoverinfo='text', name=f"{sub['LayerName'].iloc[0]} (M{cid+1})", showlegend=False))
                         for _, r in sub.iterrows():
                             c, o = get_so(r['Label'], bc)
                             if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
@@ -327,15 +326,15 @@ with tab1:
         fig.update_layout(title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center', 'font': {'family': 'Nunito', 'size': 20}}, template="plotly_white", height=850, xaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
 
-        if enable_clustering and territory_report:
+        if enable_clustering and mindset_report:
             st.divider()
-            st.header("⚗️ Strategic Territory Briefing")
+            st.header("⚗️ Strategic Mindset Briefing")
             cols = st.columns(min(3, num_clusters))
-            for i, t in enumerate(territory_report):
+            for i, t in enumerate(mindset_report):
                 with cols[i % 3]:
                     st.markdown(f"""
-                    <div class="territory-card" style="border-left-color: {t['color']};">
-                        <h3 style="color: {t['color']}; margin-top:0;">Territory {t['id']}</h3>
+                    <div class="mindset-card" style="border-left-color: {t['color']};">
+                        <h3 style="color: {t['color']}; margin-top:0;">Mindset {t['id']}</h3>
                         <p><b>Defining Rows:</b><br>{", ".join(t['rows'])}</p>
                         <p><b>Involved Columns:</b><br>{", ".join(t['brands']) if t['brands'] else "<i>No columns currently centered here.</i>"}</p>
                     </div>
