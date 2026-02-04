@@ -271,10 +271,11 @@ with tab1:
             with st.expander("Filter Base Map"):
                 sel_brands = st.multiselect("Columns:", sorted(df_brands['Label'].tolist()), default=df_brands['Label'].tolist()) if not st.checkbox("All Columns", True) else df_brands['Label'].tolist()
                 sel_attrs = st.multiselect("Rows:", sorted(df_attrs['Label'].tolist()), default=df_attrs.sort_values('Weight', ascending=False).head(15)['Label'].tolist()) if not st.checkbox("All Rows", True) else df_attrs['Label'].tolist()
+        st.session_state.mindset_report = mindset_report
 
         fig = go.Figure()
         
-        # Brands Plotting
+        # Brands
         if show_base_cols:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
             fig.add_trace(go.Scatter(
@@ -285,7 +286,7 @@ with tab1:
                 name='Brands'
             ))
 
-        # Mindsets Plotting
+        # Mindsets
         if show_base_rows:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             if enable_clustering:
@@ -307,7 +308,7 @@ with tab1:
                     name='Base Rows'
                 ))
 
-        # Passives Plotting
+        # Passives
         for layer in passive_layer_data:
             if not layer.empty and layer['Visible'].iloc[0]:
                 fig.add_trace(go.Scatter(
@@ -329,4 +330,76 @@ with tab1:
                     st.markdown(f"""
                     <div class="mindset-card" style="border-left-color: {t['color']};">
                         <span class="size-badge">~{t['size']:.1f}% Reach Est.</span>
-                        <h3 style
+                        <h3 style="color: {t['color']}; margin-top:0;">Mindset {t['id']}</h3>
+                        <p><b>Defining Rows:</b><br>{", ".join(t['rows'][:5])}...</p>
+                        <p><b>Involved Columns:</b><br>{", ".join(t['brands']) if t['brands'] else "<i>None.</i>"}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+# ==========================================
+# TAB 2: AI CHAT
+# ==========================================
+with tab2:
+    st.header("💬 AI Landscape Chat")
+    if not st.session_state.processed_data: st.warning("👈 Upload data first.")
+    else:
+        def analyze_query(query):
+            q, df_b, df_a = query.lower(), st.session_state.df_brands, st.session_state.df_attrs
+            if "theme" in q: return f"**Themes:**\n* ↔️ **X-Axis:** {df_a.loc[df_a['x'].idxmin()]['Label']} to {df_a.loc[df_a['x'].idxmax()]['Label']}\n* ↕️ **Y-Axis:** {df_a.loc[df_a['y'].idxmin()]['Label']} to {df_a.loc[df_a['y'].idxmax()]['Label']}"
+            for b in df_b['Label']:
+                if b.lower() in q:
+                    br = df_b[df_b['Label']==b].iloc[0]; df_a['D'] = np.sqrt((df_a['x']-br['x'])**2 + (df_a['y']-br['y'])**2)
+                    return f"**Audit: {b}**\n✅ **Strengths:** {', '.join(df_a.sort_values('D').head(3)['Label'].tolist())}"
+            return "Ask about Themes or Columns."
+        for m in st.session_state.messages:
+            with st.chat_message(m["role"]): st.markdown(m["content"])
+        if p := st.chat_input("Ask..."):
+            st.session_state.messages.append({"role": "user", "content": p})
+            with st.chat_message("user"): st.markdown(p)
+            r = analyze_query(p); st.session_state.messages.append({"role": "assistant", "content": r})
+            with st.chat_message("assistant"): st.markdown(r)
+
+# ==========================================
+# TAB 3: CLEANER
+# ==========================================
+with tab3:
+    st.header("🧹 MRI Data Cleaner")
+    raw_mri = st.file_uploader("Upload Raw MRI", type=["csv", "xlsx", "xls"])
+    if raw_mri:
+        try:
+            df_raw = pd.read_csv(raw_mri, header=None) if raw_mri.name.endswith('.csv') else pd.read_excel(raw_mri, header=None)
+            idx = next(i for i, row in df_raw.iterrows() if row.astype(str).str.contains("Weighted (000)", regex=False).any())
+            brand_row = df_raw.iloc[idx - 1]; metric_row = df_raw.iloc[idx]; data_rows = df_raw.iloc[idx+1:].copy()
+            cols, headers = [0], ['Attitude']
+            for c in range(1, len(metric_row)):
+                if "Weighted" in str(metric_row[c]):
+                    brand = str(brand_row[c-1])
+                    if "Study Universe" not in brand and "Total" not in brand and brand != 'nan':
+                        cols.append(c); headers.append(brand)
+            df_clean = data_rows.iloc[:, cols]; df_clean.columns = headers
+            df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
+            for c in df_clean.columns[1:]: df_clean[c] = pd.to_numeric(df_clean[c].astype(str).str.replace(',', ''), errors='coerce')
+            df_clean = df_clean.dropna(subset=df_clean.columns[1:], how='all')
+            df_clean = df_clean[df_clean[df_clean.columns[1:]].fillna(0).sum(axis=1) > 0]
+            df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
+            df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+            st.success("Cleaned!"); st.download_button("Download CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
+        except: st.error("Invalid MRI format.")
+
+# ==========================================
+# TAB 4: 📟 COUNT CODE MAKER
+# ==========================================
+with tab4:
+    st.header("📟 Count Code Maker")
+    st.markdown("Automated targeting optimized for unique reach across all map signals.")
+    if not st.session_state.processed_data or not st.session_state.mindset_report:
+        st.warning("⚠️ Turn on Mindset Discovery to generate targets.")
+    else:
+        for t in st.session_state.mindset_report:
+            with st.expander(f"Mindset {t['id']} Unified Target (Est. {t['size']:.1f}% Reach)", expanded=True):
+                rows = t['rows']
+                threshold = t['threshold']
+                mri_code = "(" + " + ".join([f"[{r}]" for r in rows]) + f") >= {threshold}"
+                st.markdown('<div class="logic-tag">MRI-SIMMONS TARGET CODE</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="code-block">{mri_code}</div>', unsafe_allow_html=True)
+                st.info(f"Targets the top signals from all layers. Calibrated for a high-signal {t['size']:.1f}% audience.")
