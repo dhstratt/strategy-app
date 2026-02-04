@@ -53,24 +53,14 @@ st.markdown("""
             border: 1px solid #444;
             line-height: 1.6;
         }
-        .logic-tag {
-            background: #333;
-            color: #fff;
-            padding: 4px 12px;
-            border-radius: 4px;
-            font-size: 0.9em;
-            font-weight: 800;
-            margin-bottom: 15px;
-            display: inline-block;
-        }
     </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE INITIALIZATION (CRASH FIX) ---
+# --- SESSION STATE INITIALIZATION ---
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = False
 if 'passive_data' not in st.session_state:
-    st.session_state.passive_data = []  # Initialize as empty list to prevent Attribute Error
+    st.session_state.passive_data = [] 
 if 'mindset_report' not in st.session_state:
     st.session_state.mindset_report = []
 if 'messages' not in st.session_state:
@@ -244,7 +234,6 @@ with tab1:
     if st.session_state.processed_data:
         df_brands = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_attrs = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
-        # SAFE LOAD: Ensure passive data exists before accessing it
         passive_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
         passive_layer_data = [rotate_coords(l.copy(), map_rotation) for l in passive_source]
         
@@ -282,10 +271,8 @@ with tab1:
                 
                 # REACH CALIBRATION (Average of top 5 signals)
                 reach_proxy = sorted_all.head(5)['Weight'].mean()
-                # Denominator safety check
                 avg_weight = getattr(st.session_state, 'landscape_avg_weight', 1.0)
                 if avg_weight == 0: avg_weight = 1.0
-                
                 reach_share = (reach_proxy / avg_weight) * 25
                 
                 mindset_report.append({
@@ -315,7 +302,7 @@ with tab1:
                             passive_layer_data[i] = layer[layer['Label'].isin(st.multiselect("Select:", l_labels, default=l_labels, key=f"f_sel_{i}"))]
         st.session_state.mindset_report = mindset_report
 
-        # --- PLOTTING ---
+        # --- PLOTTING (INTERACTIVE LABELS RESTORED) ---
         fig = go.Figure()
         hl = []
         if focus_brand != "None":
@@ -334,17 +321,22 @@ with tab1:
             if lbl == focus_brand or lbl in hl: return base_c, 1.0
             return '#d3d3d3', 0.2
 
+        # Brands
         if show_base_cols:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
             res = [get_so(r['Label'], '#1f77b4') for _, r in plot_b.iterrows()]
             fig.add_trace(go.Scatter(
                 x=plot_b['x'], y=plot_b['y'], 
-                mode='markers+text' if lbl_cols else 'markers',
-                text=plot_b['Label'], textposition="top center",
+                mode='markers', # Markers only, text via annotation for interactivity
                 marker=dict(size=10, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')),
-                name='Columns'
+                text=plot_b['Label'], hoverinfo='text', name='Columns'
             ))
+            if lbl_cols:
+                for _, r in plot_b.iterrows():
+                    c, o = get_so(r['Label'], '#1f77b4')
+                    if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=False, yshift=10, font=dict(color=c, size=11))
 
+        # Mindsets
         if show_base_rows:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             if enable_clustering:
@@ -352,33 +344,40 @@ with tab1:
                     sub = plot_a[plot_a['Cluster'] == cid]; bc = cluster_colors[cid % len(cluster_colors)]
                     res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
                     fig.add_trace(go.Scatter(
-                        x=sub['x'], y=sub['y'], 
-                        mode='markers+text' if lbl_rows else 'markers',
-                        text=sub['Label'], textposition="top center",
+                        x=sub['x'], y=sub['y'], mode='markers',
                         marker=dict(size=7, color=[r[0] for r in res], opacity=[r[1] for r in res]),
-                        name=f"Mindset {cid+1}"
+                        text=sub['Label'], hoverinfo='text', name=f"Mindset {cid+1}"
                     ))
+                    if lbl_rows:
+                        for _, r in sub.iterrows():
+                            c, o = get_so(r['Label'], bc)
+                            if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=False, yshift=10, font=dict(color=c, size=11))
             else:
                 res = [get_so(r['Label'], '#d62728') for _, r in plot_a.iterrows()]
                 fig.add_trace(go.Scatter(
-                    x=plot_a['x'], y=plot_a['y'], 
-                    mode='markers+text' if lbl_rows else 'markers',
-                    text=plot_a['Label'], textposition="top center",
+                    x=plot_a['x'], y=plot_a['y'], mode='markers',
                     marker=dict(size=7, color=[r[0] for r in res], opacity=[r[1] for r in res]),
-                    name='Base Rows'
+                    text=plot_a['Label'], hoverinfo='text', name='Base Rows'
                 ))
+                if lbl_rows:
+                    for _, r in plot_a.iterrows():
+                        c, o = get_so(r['Label'], '#d62728')
+                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=False, yshift=10, font=dict(color=c, size=11))
 
+        # Passives
         for i, layer in enumerate(passive_layer_data):
             if not layer.empty and layer['Visible'].iloc[0]:
                 bc = cluster_colors[i % len(cluster_colors)] if not enable_clustering else cluster_colors[layer['Cluster'].iloc[0] % len(cluster_colors)]
                 res = [get_so(r['Label'], bc) for _, r in layer.iterrows()]
                 fig.add_trace(go.Scatter(
-                    x=layer['x'], y=layer['y'], 
-                    mode='markers+text' if lbl_passive else 'markers',
-                    text=layer['Label'], textposition="top center",
+                    x=layer['x'], y=layer['y'], mode='markers',
                     marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')),
-                    name=layer['LayerName'].iloc[0]
+                    text=layer['Label'], hoverinfo='text', name=layer['LayerName'].iloc[0]
                 ))
+                if lbl_passive:
+                    for _, r in layer.iterrows():
+                        c, o = get_so(r['Label'], bc)
+                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=False, yshift=10, font=dict(color=c, size=10))
 
         fig.update_layout(title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center', 'font': {'family': 'Nunito', 'size': 20}}, template="plotly_white", height=850, xaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
