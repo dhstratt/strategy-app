@@ -20,6 +20,7 @@ if 'messages' not in st.session_state:
 # --- TABS ---
 tab1, tab2, tab3 = st.tabs(["🧠 The Strategy Engine", "💬 AI Strategy Chat", "🧹 MRI Data Cleaner"])
 
+# --- HELPERS ---
 def clean_df(df):
     label_col = df.columns[0]
     df = df.set_index(label_col)
@@ -40,142 +41,125 @@ def load_file(file):
 # ==========================================
 with tab1:
     st.title("🧠 The Strategy Engine")
-    
     col_nav, col_main = st.columns([1, 4])
     
     # --- SIDEBAR ---
     with st.sidebar:
-        # --- PROJECT MANAGER (NEW) ---
+        # 1. PROJECT MANAGER
         st.header("💾 Project Manager")
         
         # LOAD
-        uploaded_project = st.file_uploader("Load Project (.use)", type=["use"], key="loader")
-        if uploaded_project is not None:
-            try:
-                data = pickle.load(uploaded_project)
-                st.session_state.df_brands = data['df_brands']
-                st.session_state.df_attrs = data['df_attrs']
-                st.session_state.passive_data = data['passive_data']
-                st.session_state.accuracy = data['accuracy']
-                st.session_state.processed_data = True
-                st.success("Project Loaded Successfully!")
-            except Exception as e:
-                st.error("Invalid Project File.")
+        with st.expander("📂 Load Project", expanded=False):
+            uploaded_project = st.file_uploader("Upload .use file", type=["use"], key="loader")
+            if uploaded_project is not None:
+                try:
+                    data = pickle.load(uploaded_project)
+                    st.session_state.df_brands = data['df_brands']
+                    st.session_state.df_attrs = data['df_attrs']
+                    st.session_state.passive_data = data['passive_data']
+                    st.session_state.accuracy = data['accuracy']
+                    st.session_state.processed_data = True
+                    st.success("Project Loaded!")
+                    st.rerun()
+                except: st.error("Invalid Project File")
+
+        # SAVE
+        with st.expander("💾 Save Project", expanded=True):
+            proj_name = st.text_input("Project Name", "My_Strategy_Map")
+            if st.session_state.processed_data:
+                project_data = {
+                    'df_brands': st.session_state.df_brands,
+                    'df_attrs': st.session_state.df_attrs,
+                    'passive_data': st.session_state.passive_data,
+                    'accuracy': st.session_state.accuracy
+                }
+                buffer = io.BytesIO()
+                pickle.dump(project_data, buffer)
+                buffer.seek(0)
+                st.download_button("Download Project 📥", buffer, f"{proj_name}.use", "application/octet-stream")
+            else:
+                st.info("Upload data to save.")
 
         st.divider()
 
-        # UPLOAD (Standard)
+        # 2. DATA IMPORT
         st.header("📂 Data Import")
         uploaded_file = st.file_uploader("1. Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
         passive_files = st.file_uploader("2. Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
-        
-        # SAVE (If data exists)
-        if st.session_state.processed_data:
-            st.divider()
-            st.subheader("Save Current Project")
-            proj_name = st.text_input("Project Name", "My_Strategy_Map")
-            
-            # Bundle State
-            project_data = {
-                'df_brands': st.session_state.df_brands,
-                'df_attrs': st.session_state.df_attrs,
-                'passive_data': st.session_state.passive_data,
-                'accuracy': st.session_state.accuracy
-            }
-            
-            # Serialize
-            buffer = io.BytesIO()
-            pickle.dump(project_data, buffer)
-            buffer.seek(0)
-            
-            st.download_button(
-                label="Download Project 📥",
-                data=buffer,
-                file_name=f"{proj_name}.use",
-                mime="application/octet-stream"
-            )
         st.divider()
 
-    # --- MAIN LOGIC ---
-    # Trigger processing only if new file uploaded OR project loaded
+    # --- PROCESSING ---
     if uploaded_file is not None:
         try:
-            # 1. PROCESS CORE
             df_active_raw = load_file(uploaded_file)
             df_math = clean_df(df_active_raw)
             df_math = df_math.loc[(df_math != 0).any(axis=1)] 
             df_math = df_math.loc[:, (df_math != 0).any(axis=0)]
             
-            if df_math.empty:
-                st.error("Error: Dataset empty after cleaning.")
-                st.stop()
-            
-            # SVD
-            N = df_math.values
-            P = N / N.sum()
-            r = P.sum(axis=1)
-            c = P.sum(axis=0)
-            E = np.outer(r, c)
-            E[E < 1e-9] = 1e-9
-            R = (P - E) / np.sqrt(E)
-            U, s, Vh = np.linalg.svd(R, full_matrices=False)
-            
-            # Accuracy
-            inertia = s**2
-            map_accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
-            
-            row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
-            col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
-            
-            df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
-            df_brands['Label'] = df_math.columns
-            df_brands['Type'] = 'Brand'
-            df_brands['Distinctiveness'] = np.sqrt(df_brands['x']**2 + df_brands['y']**2)
-            
-            df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x', 'y'])
-            df_attrs['Label'] = df_math.index
-            df_attrs['Type'] = 'Attribute'
-            df_attrs['Distinctiveness'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
+            if not df_math.empty:
+                # SVD
+                N = df_math.values
+                P = N / N.sum()
+                r = P.sum(axis=1)
+                c = P.sum(axis=0)
+                E = np.outer(r, c)
+                E[E < 1e-9] = 1e-9
+                R = (P - E) / np.sqrt(E)
+                U, s, Vh = np.linalg.svd(R, full_matrices=False)
+                
+                inertia = s**2
+                map_accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
+                
+                row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
+                col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
+                
+                df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
+                df_brands['Label'] = df_math.columns
+                df_brands['Type'] = 'Brand'
+                df_brands['Distinctiveness'] = np.sqrt(df_brands['x']**2 + df_brands['y']**2)
+                
+                df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x', 'y'])
+                df_attrs['Label'] = df_math.index
+                df_attrs['Type'] = 'Attribute'
+                df_attrs['Distinctiveness'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
 
-            st.session_state.processed_data = True
-            st.session_state.df_brands = df_brands
-            st.session_state.df_attrs = df_attrs
-            st.session_state.accuracy = map_accuracy
+                st.session_state.processed_data = True
+                st.session_state.df_brands = df_brands
+                st.session_state.df_attrs = df_attrs
+                st.session_state.accuracy = map_accuracy
 
-            # 2. PASSIVE LAYERS
-            passive_layer_data = []
-            if passive_files:
-                for p_file in passive_files:
-                    try:
-                        p_raw = load_file(p_file)
-                        p_clean = clean_df(p_raw)
-                        common_brands = list(set(p_clean.columns) & set(df_math.columns))
-                        common_attrs = list(set(p_clean.index) & set(df_math.index))
-                        
-                        if len(common_brands) > len(common_attrs): # Attributes
-                            p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
-                            p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
-                            proj = p_prof.values @ col_coords[:, :2] / s[:2]
-                            res = pd.DataFrame(proj, columns=['x', 'y'])
-                            res['Label'] = p_aligned.index; res['Shape'] = 'star'
-                        else: # Brands
-                            p_aligned = p_clean.reindex(df_math.index).fillna(0)
-                            p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
-                            proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
-                            res = pd.DataFrame(proj, columns=['x', 'y'])
-                            res['Label'] = p_aligned.columns; res['Shape'] = 'diamond'
-                        
-                        res['LayerName'] = p_file.name
-                        res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
-                        passive_layer_data.append(res)
-                    except: pass
-            
-            st.session_state.passive_data = passive_layer_data
-        
-        except Exception as e:
-            st.error(f"Error processing data: {e}")
+                # Passive
+                passive_layer_data = []
+                if passive_files:
+                    for p_file in passive_files:
+                        try:
+                            p_raw = load_file(p_file)
+                            p_clean = clean_df(p_raw)
+                            common_brands = list(set(p_clean.columns) & set(df_math.columns))
+                            common_attrs = list(set(p_clean.index) & set(df_math.index))
+                            
+                            if len(common_brands) > len(common_attrs):
+                                p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
+                                p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
+                                proj = p_prof.values @ col_coords[:, :2] / s[:2]
+                                res = pd.DataFrame(proj, columns=['x', 'y'])
+                                res['Label'] = p_aligned.index; res['Shape'] = 'star'
+                            else:
+                                p_aligned = p_clean.reindex(df_math.index).fillna(0)
+                                p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
+                                proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
+                                res = pd.DataFrame(proj, columns=['x', 'y'])
+                                res['Label'] = p_aligned.columns; res['Shape'] = 'diamond'
+                            
+                            res['LayerName'] = p_file.name
+                            res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
+                            passive_layer_data.append(res)
+                        except: pass
+                st.session_state.passive_data = passive_layer_data
 
-    # --- DISPLAY (If Data Exists) ---
+        except Exception as e: st.error(f"Error: {e}")
+
+    # --- DISPLAY ---
     if st.session_state.processed_data:
         df_brands = st.session_state.df_brands
         df_attrs = st.session_state.df_attrs
@@ -286,11 +270,10 @@ with tab1:
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True, 'displayModeBar': True})
 
 # ==========================================
-# TAB 2: AI STRATEGY CHAT
+# TAB 2: AI CHAT
 # ==========================================
 with tab2:
     st.header("💬 AI Strategy Chat")
-    
     if not st.session_state.processed_data:
         st.warning("👈 Please upload and process data in 'The Strategy Engine' tab first.")
     else:
@@ -299,52 +282,49 @@ with tab2:
             df_b = st.session_state.df_brands
             df_a = st.session_state.df_attrs
             
-            if "theme" in query or "dimension" in query or "axis" in query:
+            if "theme" in query or "dimension" in query:
                 x_max = df_a.loc[df_a['x'].idxmax()]['Label']
                 x_min = df_a.loc[df_a['x'].idxmin()]['Label']
                 y_max = df_a.loc[df_a['y'].idxmax()]['Label']
                 y_min = df_a.loc[df_a['y'].idxmin()]['Label']
-                return f"""**Map Themes:**\n\n* **Horizontal Tension:** Runs from **"{x_min}"** to **"{x_max}"**.\n* **Vertical Tension:** Runs from **"{y_min}"** to **"{y_max}"**."""
+                return f"**Map Themes:**\n\n* **Horizontal:** {x_min} ↔ {x_max}\n* **Vertical:** {y_min} ↔ {y_max}"
 
-            if "white space" in query or "gap" in query or "opportunity" in query:
-                df_a['MinBrandDist'] = df_a.apply(lambda r: np.min(np.sqrt((df_b['x'] - r['x'])**2 + (df_b['y'] - r['y'])**2)), axis=1)
-                white_space = df_a.sort_values('MinBrandDist', ascending=False).head(3)
-                ws_text = "\n".join([f"* **{row['Label']}** (Distance: {row['MinBrandDist']:.2f})" for i, row in white_space.iterrows()])
-                return f"**Consumer White Space:**\n\nThe following attributes are furthest from any brand:\n\n{ws_text}"
+            if "white space" in query or "opportunity" in query:
+                df_a['MinDist'] = df_a.apply(lambda r: np.min(np.sqrt((df_b['x'] - r['x'])**2 + (df_b['y'] - r['y'])**2)), axis=1)
+                ws = df_a.sort_values('MinDist', ascending=False).head(3)
+                txt = "\n".join([f"* {r['Label']}" for _, r in ws.iterrows()])
+                return f"**White Space Opportunities:**\n\n{txt}"
 
-            for brand in df_b['Label']:
-                if brand.lower() in query:
-                    brand_row = df_b[df_b['Label'] == brand].iloc[0]
-                    bx, by = brand_row['x'], brand_row['y']
-                    df_a['Dist'] = np.sqrt((df_a['x'] - bx)**2 + (df_a['y'] - by)**2)
-                    strengths = df_a.sort_values('Dist').head(3)['Label'].tolist()
-                    df_a['OppositeDist'] = np.sqrt((df_a['x'] - (-bx))**2 + (df_a['y'] - (-by))**2)
-                    weaknesses = df_a.sort_values('OppositeDist').head(3)['Label'].tolist()
-                    df_b['Dist'] = np.sqrt((df_b['x'] - bx)**2 + (df_b['y'] - by)**2)
-                    competitors = df_b[df_b['Label'] != brand].sort_values('Dist').head(3)['Label'].tolist()
-                    return f"""**Strategic Audit for {brand}:**\n\n**✅ Strengths (Owns These):**\n* {strengths[0]}\n* {strengths[1]}\n* {strengths[2]}\n\n**❌ Weaknesses (Lacks These):**\n* {weaknesses[0]}\n* {weaknesses[1]}\n* {weaknesses[2]}\n\n**⚔️ Primary Competitors:**\n* {', '.join(competitors)}"""
+            for b in df_b['Label']:
+                if b.lower() in query:
+                    br = df_b[df_b['Label'] == b].iloc[0]
+                    df_a['D'] = np.sqrt((df_a['x'] - br['x'])**2 + (df_a['y'] - br['y'])**2)
+                    df_a['OD'] = np.sqrt((df_a['x'] - (-br['x']))**2 + (df_a['y'] - (-br['y']))**2)
+                    df_b['D'] = np.sqrt((df_b['x'] - br['x'])**2 + (df_b['y'] - br['y'])**2)
+                    
+                    s = df_a.sort_values('D').head(3)['Label'].tolist()
+                    w = df_a.sort_values('OD').head(3)['Label'].tolist()
+                    c = df_b[df_b['Label']!=b].sort_values('D').head(3)['Label'].tolist()
+                    return f"**Audit: {b}**\n\n✅ **Strengths:** {', '.join(s)}\n❌ **Weaknesses:** {', '.join(w)}\n⚔️ **Competitors:** {', '.join(c)}"
+            
+            return "Try asking: 'What are the themes?', 'Where is the white space?', or 'Audit [Brand]'."
 
-            return "I can analyze **Themes**, **White Space**, or **Audit [Brand]**."
-
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        if prompt := st.chat_input("Ask a strategic question..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            response = analyze_query(prompt)
-            with st.chat_message("assistant"):
-                st.markdown(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
+        for m in st.session_state.messages:
+            with st.chat_message(m["role"]): st.markdown(m["content"])
+        
+        if p := st.chat_input("Ask a question..."):
+            st.session_state.messages.append({"role": "user", "content": p})
+            with st.chat_message("user"): st.markdown(p)
+            r = analyze_query(p)
+            with st.chat_message("assistant"): st.markdown(r)
+            st.session_state.messages.append({"role": "assistant", "content": r})
 
 # ==========================================
-# TAB 3: DATA CLEANER
+# TAB 3: CLEANER
 # ==========================================
 with tab3:
     st.header("🧹 MRI Data Cleaner")
-    raw_mri = st.file_uploader("Upload Raw MRI (CSV/Excel)", type=["csv", "xlsx", "xls"])
+    raw_mri = st.file_uploader("Upload Raw MRI", type=["csv", "xlsx", "xls"])
     if raw_mri:
         try:
             if raw_mri.name.endswith('.csv'): df_raw = pd.read_csv(raw_mri, header=None)
