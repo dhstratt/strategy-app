@@ -2,9 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import plotly.express as px
 import collections
 import io
 import pickle
+from sklearn.cluster import KMeans
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="The Consumer Landscape")
@@ -58,8 +60,8 @@ def load_file(file):
 # ==========================================
 with tab1:
     st.title("🗺️ The Consumer Landscape")
-    col_nav, col_main = st.columns([1, 4])
     
+    # --- SIDEBAR (STRUCTURED) ---
     with st.sidebar:
         # 1. LOAD / SAVE / IMPORT
         st.header("📂 Data & Projects")
@@ -121,7 +123,16 @@ with tab1:
         
         st.divider()
 
-        # 3. FILTERS & SPOTLIGHT
+        # 3. ANALYSIS (CLUSTERING)
+        st.header("⚗️ Analysis")
+        enable_clustering = st.checkbox("Enable Territory Discovery", False)
+        num_clusters = 4
+        if enable_clustering:
+            num_clusters = st.slider("Number of Territories", 2, 8, 4)
+        
+        st.divider()
+
+        # 4. FILTERS & SPOTLIGHT
         st.header("🔍 Filter & Highlight")
         
         # Will be populated after data processing...
@@ -228,6 +239,17 @@ with tab1:
         df_attrs = st.session_state.df_attrs
         passive_layer_data = st.session_state.passive_data
         
+        # --- CLUSTERING LOGIC (ON THE FLY) ---
+        if enable_clustering:
+            try:
+                kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
+                df_attrs['Cluster'] = kmeans.fit_predict(df_attrs[['x', 'y']])
+                df_attrs['Cluster_Label'] = "Territory " + (df_attrs['Cluster'] + 1).astype(str)
+            except:
+                df_attrs['Cluster_Label'] = "Base Rows"
+        else:
+             df_attrs['Cluster_Label'] = "Base Rows"
+
         # --- POPULATE FILTERS ---
         with placeholder_filters.container():
             all_b_labels = sorted(df_brands['Label'].tolist())
@@ -288,7 +310,7 @@ with tab1:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
             c_list, o_list = [], []
             for _, r in plot_b.iterrows():
-                c, o = get_color_opacity(r['Label'], '#1f77b4')
+                c, o = get_color_opacity(r['Label'], '#1f77b4') # Blue default
                 c_list.append(c); o_list.append(o)
             
             fig.add_trace(go.Scatter(
@@ -300,22 +322,49 @@ with tab1:
                 c, o = get_color_opacity(r['Label'], '#1f77b4')
                 if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(color=c, size=11), arrowcolor=c)
 
-        # 2. BASE ROWS
+        # 2. BASE ROWS (CLUSTERED OR DEFAULT)
         if show_base_rows:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
-            c_list, o_list = [], []
-            for _, r in plot_a.iterrows():
-                c, o = get_color_opacity(r['Label'], '#d62728')
-                c_list.append(c); o_list.append(o)
             
-            fig.add_trace(go.Scatter(
-                x=plot_a['x'], y=plot_a['y'], mode='markers',
-                marker=dict(size=7, color=c_list, opacity=o_list),
-                text=plot_a['Label'], hoverinfo='text', name='Base Rows'
-            ))
-            for _, r in plot_a.iterrows():
-                c, o = get_color_opacity(r['Label'], '#d62728')
-                if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
+            if enable_clustering:
+                # Group by Cluster for Legend
+                clusters = sorted(plot_a['Cluster'].unique())
+                # Safe Color Palette for Clusters
+                cluster_colors = px.colors.qualitative.Bold
+                
+                for c_id in clusters:
+                    sub_df = plot_a[plot_a['Cluster'] == c_id]
+                    base_c = cluster_colors[c_id % len(cluster_colors)]
+                    
+                    c_list, o_list = [], []
+                    for _, r in sub_df.iterrows():
+                        c, o = get_color_opacity(r['Label'], base_c)
+                        c_list.append(c); o_list.append(o)
+                    
+                    fig.add_trace(go.Scatter(
+                        x=sub_df['x'], y=sub_df['y'], mode='markers',
+                        marker=dict(size=7, color=c_list, opacity=o_list),
+                        text=sub_df['Label'], hoverinfo='text', name=f"Territory {c_id+1}"
+                    ))
+                    
+                    for _, r in sub_df.iterrows():
+                        c, o = get_color_opacity(r['Label'], base_c)
+                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
+            else:
+                # Standard Red Mode
+                c_list, o_list = [], []
+                for _, r in plot_a.iterrows():
+                    c, o = get_color_opacity(r['Label'], '#d62728')
+                    c_list.append(c); o_list.append(o)
+                
+                fig.add_trace(go.Scatter(
+                    x=plot_a['x'], y=plot_a['y'], mode='markers',
+                    marker=dict(size=7, color=c_list, opacity=o_list),
+                    text=plot_a['Label'], hoverinfo='text', name='Base Rows'
+                ))
+                for _, r in plot_a.iterrows():
+                    c, o = get_color_opacity(r['Label'], '#d62728')
+                    if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
 
         # 3. PASSIVE LAYERS
         pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
@@ -395,9 +444,12 @@ with tab3:
         try:
             if raw_mri.name.endswith('.csv'): df_raw = pd.read_csv(raw_mri, header=None)
             else: df_raw = pd.read_excel(raw_mri, header=None)
+            
             metric_row_idx = -1
             for i, row in df_raw.iterrows():
-                if row.astype(str).str.contains("Weighted (000)", regex=False).any(): metric_row_idx = i; break
+                if row.astype(str).str.contains("Weighted (000)", regex=False).any():
+                    metric_row_idx = i; break
+            
             if metric_row_idx != -1:
                 brand_row = df_raw.iloc[metric_row_idx - 1]
                 metric_row = df_raw.iloc[metric_row_idx]
@@ -410,15 +462,15 @@ with tab3:
                             cols.append(c); headers.append(brand)
                 
                 df_clean = data_rows.iloc[:, cols]; df_clean.columns = headers
-                # 1. Clean Text
                 df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
-                # 2. Convert Data to Numeric
                 data_cols = df_clean.columns[1:]
                 for c in data_cols:
                     df_clean[c] = pd.to_numeric(df_clean[c].astype(str).str.replace(',', ''), errors='coerce')
-                # 3. Drop Empty Rows (All NaNs in data columns)
-                df_clean = df_clean.dropna(subset=data_cols, how='all')
-                # 4. Filter Tags
+                
+                # --- JUNK REMOVAL ---
+                df_clean = df_clean.dropna(subset=data_cols, how='all') # Drop if ALL numbers are NaN
+                df_clean = df_clean[df_clean[data_cols].sum(axis=1) > 0] # Drop if SUM is 0
+                
                 df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
                 df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
                 
