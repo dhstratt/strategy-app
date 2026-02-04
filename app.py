@@ -30,6 +30,16 @@ st.markdown("""
             border-left: 10px solid #ccc;
             background-color: #f9f9f9;
             margin-bottom: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .size-badge {
+            float: right;
+            background: #eee;
+            padding: 2px 8px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: 700;
+            color: #666;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -152,6 +162,7 @@ with tab1:
                 
                 df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x', 'y'])
                 df_attrs['Label'] = df_math.index
+                df_attrs['Weight'] = df_math.sum(axis=1).values # Capture row-level population sizing
 
                 st.session_state.processed_data = True
                 st.session_state.df_brands = df_brands
@@ -169,22 +180,22 @@ with tab1:
                         if is_rows:
                             p_clean = p_clean.loc[[r for r in p_clean.index if r not in df_math.index]]
                             if not p_clean.empty and len(common_brands) > 0:
-                                # Alignment Fix: Reindex to base columns
                                 p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
                                 proj = p_prof.values @ col_coords[:, :2] / s[:2]
                                 res = pd.DataFrame(proj, columns=['x', 'y'])
                                 res['Label'] = p_aligned.index; res['Shape'] = 'star'; res['LayerName'] = cfg["name"]; res['Visible'] = cfg["show"]
+                                res['Weight'] = p_clean.sum(axis=1).values
                                 passive_layer_data.append(res)
                         else:
                             p_clean = p_clean[[c for c in p_clean.columns if c not in df_math.columns]]
                             if not p_clean.empty and len(common_attrs) > 0:
-                                # Alignment Fix: Reindex to base rows
                                 p_aligned = p_clean.reindex(df_math.index).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
                                 proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
                                 res = pd.DataFrame(proj, columns=['x', 'y'])
                                 res['Label'] = p_aligned.columns; res['Shape'] = 'diamond'; res['LayerName'] = cfg["name"]; res['Visible'] = cfg["show"]
+                                res['Weight'] = p_clean.sum(axis=0).values
                                 passive_layer_data.append(res)
                     except: pass
                 st.session_state.passive_data = passive_layer_data
@@ -203,10 +214,23 @@ with tab1:
             df_attrs['Cluster'] = kmeans.fit_predict(df_attrs[['x', 'y']])
             centroids = kmeans.cluster_centers_
             df_brands['Cluster'] = kmeans.predict(df_brands[['x', 'y']])
+            
+            total_base_weight = df_attrs['Weight'].sum()
+            
             for i in range(num_clusters):
                 c_rows = df_attrs[df_attrs['Cluster'] == i].copy()
                 c_rows['dist'] = np.sqrt((c_rows['x'] - centroids[i][0])**2 + (c_rows['y'] - centroids[i][1])**2)
-                mindset_report.append({"id": i+1, "color": cluster_colors[i % len(cluster_colors)], "rows": c_rows.sort_values('dist').head(5)['Label'].tolist(), "brands": df_brands[df_brands['Cluster'] == i]['Label'].tolist()})
+                
+                # Calculate Size
+                m_size = (c_rows['Weight'].sum() / total_base_weight) * 100
+                
+                mindset_report.append({
+                    "id": i+1, 
+                    "color": cluster_colors[i % len(cluster_colors)], 
+                    "rows": c_rows.sort_values('dist').head(5)['Label'].tolist(), 
+                    "brands": df_brands[df_brands['Cluster'] == i]['Label'].tolist(),
+                    "size": m_size
+                })
             for layer in passive_layer_data:
                 if not layer.empty: layer['Cluster'] = kmeans.predict(layer[['x', 'y']])
 
@@ -296,7 +320,14 @@ with tab1:
             cols = st.columns(min(3, num_clusters))
             for i, t in enumerate(mindset_report):
                 with cols[i % 3]:
-                    st.markdown(f'<div class="mindset-card" style="border-left-color: {t["color"]};"><h3 style="color: {t["color"]}; margin-top:0;">Mindset {t["id"]}</h3><p><b>Defining Rows:</b><br>{", ".join(t["rows"])}</p><p><b>Involved Columns:</b><br>{", ".join(t["brands"]) if t["brands"] else "<i>None.</i>"}</p></div>', unsafe_allow_html=True)
+                    st.markdown(f"""
+                    <div class="mindset-card" style="border-left-color: {t['color']};">
+                        <span class="size-badge">{t['size']:.1f}% of agreement</span>
+                        <h3 style="color: {t['color']}; margin-top:0;">Mindset {t['id']}</h3>
+                        <p><b>Defining Rows:</b><br>{", ".join(t['rows'])}</p>
+                        <p><b>Involved Columns:</b><br>{", ".join(t['brands']) if t['brands'] else "<i>None.</i>"}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
 
 # ==========================================
 # TAB 2: AI CHAT
