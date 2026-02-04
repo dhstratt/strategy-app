@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import re
+import collections
+import io
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
@@ -12,13 +13,12 @@ if 'processed_data' not in st.session_state:
     st.session_state.processed_data = False
 if 'messages' not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "I am your Strategy Co-Pilot. Ask me about any **Brand** (e.g., 'Tell me about Nike') or any **Attribute** (e.g., 'Who owns quality?')."}
+        {"role": "assistant", "content": "I am your Strategy Co-Pilot. You can ask me:\n- **'What are the main themes?'** (Map Dimensions)\n- **'Where is the white space?'** (Unclaimed Opportunities)\n- **'Audit [Brand Name]'** (Strengths & Weaknesses)"}
     ]
 
 # --- TABS ---
 tab1, tab2, tab3 = st.tabs(["🧠 The Strategy Engine", "💬 AI Strategy Chat", "🧹 MRI Data Cleaner"])
 
-# --- SHARED FUNCTIONS ---
 def clean_df(df):
     label_col = df.columns[0]
     df = df.set_index(label_col)
@@ -29,6 +29,10 @@ def clean_df(df):
     df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower() and "base" not in str(c).lower()]
     return df[valid_cols]
+
+def load_file(file):
+    if file.name.endswith('.csv'): return pd.read_csv(file)
+    else: return pd.read_excel(file)
 
 # ==========================================
 # TAB 1: THE STRATEGY ENGINE
@@ -46,10 +50,8 @@ with tab1:
     if uploaded_file is not None:
         try:
             # 1. PROCESS
-            if uploaded_file.name.endswith('.csv'): df_raw = pd.read_csv(uploaded_file)
-            else: df_raw = pd.read_excel(uploaded_file)
-            
-            df_math = clean_df(df_raw)
+            df_active_raw = load_file(uploaded_file)
+            df_math = clean_df(df_active_raw)
             df_math = df_math.loc[(df_math != 0).any(axis=1)] 
             df_math = df_math.loc[:, (df_math != 0).any(axis=0)]
             
@@ -63,15 +65,12 @@ with tab1:
             R = (P - E) / np.sqrt(E)
             U, s, Vh = np.linalg.svd(R, full_matrices=False)
             
-            # Metric
             inertia = s**2
             map_accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
             
-            # Coords
             row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
             col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
             
-            # DataFrames
             df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
             df_brands['Label'] = df_math.columns
             df_brands['Type'] = 'Brand'
@@ -82,7 +81,6 @@ with tab1:
             df_attrs['Type'] = 'Attribute'
             df_attrs['Distinctiveness'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
 
-            # SAVE STATE
             st.session_state.processed_data = True
             st.session_state.df_brands = df_brands
             st.session_state.df_attrs = df_attrs
@@ -93,10 +91,8 @@ with tab1:
             if passive_files:
                 for p_file in passive_files:
                     try:
-                        if p_file.name.endswith('.csv'): p_raw = pd.read_csv(p_file)
-                        else: p_raw = pd.read_excel(p_file)
+                        p_raw = load_file(p_file)
                         p_clean = clean_df(p_raw)
-                        
                         common_brands = list(set(p_clean.columns) & set(df_math.columns))
                         common_attrs = list(set(p_clean.index) & set(df_math.index))
                         
@@ -114,24 +110,21 @@ with tab1:
                             res['Label'] = p_aligned.columns; res['Shape'] = 'diamond'
                         
                         res['LayerName'] = p_file.name
+                        res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                         passive_layer_data.append(res)
                     except: pass
-            
-            st.session_state.passive_data = passive_layer_data
 
             # 3. CONTROLS
             with st.sidebar:
                 st.header("🎯 Map Controls")
                 st.metric("Map Stability", f"{map_accuracy:.1f}%")
                 
-                # Spotlight
                 st.markdown("---")
                 st.subheader("🔦 Brand Spotlight")
                 all_b_labels = sorted(df_brands['Label'].tolist())
                 focus_brand = st.selectbox("Highlight:", ["None"] + all_b_labels)
                 st.markdown("---")
 
-                # Filters
                 with st.expander("🔹 Core Brands", expanded=False):
                     if not st.checkbox("Show All Brands", value=True):
                         sel_brands = st.multiselect("Filter:", all_b_labels, default=all_b_labels)
@@ -144,7 +137,6 @@ with tab1:
                         sel_attrs = st.multiselect("Filter:", all_a, default=top_15)
                     else: sel_attrs = df_attrs['Label'].tolist()
 
-                # Passive
                 sel_passive_data = []
                 if passive_layer_data:
                     st.subheader("🔸 Passive Layers")
@@ -176,7 +168,6 @@ with tab1:
                     else: return (c, 1.0) if lbl in hero_related else ('#d3d3d3', 0.2)
                 return c, op
 
-            # Traces
             bc, bo = [], []
             for _, r in plot_brands.iterrows():
                 c, o = get_style(r['Label'], True)
@@ -198,7 +189,6 @@ with tab1:
                 lo = [0.9 if focus_brand == "None" else 0.2 for _ in range(len(layer))]
                 fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=lc, opacity=lo, line=dict(width=1, color='white')), hovertext=layer['Label'], name=layer['LayerName'].iloc[0]))
 
-            # Annotations
             anns = []
             for _, r in plot_brands.iterrows():
                 c, o = get_style(r['Label'], True)
@@ -231,58 +221,70 @@ with tab2:
     if not st.session_state.processed_data:
         st.warning("👈 Please upload and process data in 'The Strategy Engine' tab first.")
     else:
-        # Chat Logic Engine
+        # --- THE STRATEGY BRAIN ---
         def analyze_query(query):
             query = query.lower()
             df_b = st.session_state.df_brands
             df_a = st.session_state.df_attrs
             
-            # 1. BRAND ANALYSIS
+            # 1. THEME ANALYSIS
+            if "theme" in query or "dimension" in query or "axis" in query:
+                x_max = df_a.loc[df_a['x'].idxmax()]['Label']
+                x_min = df_a.loc[df_a['x'].idxmin()]['Label']
+                y_max = df_a.loc[df_a['y'].idxmax()]['Label']
+                y_min = df_a.loc[df_a['y'].idxmin()]['Label']
+                return f"""**Map Themes:**\n\n* **Horizontal Tension:** Runs from **"{x_min}"** to **"{x_max}"**.\n* **Vertical Tension:** Runs from **"{y_min}"** to **"{y_max}"**."""
+
+            # 2. WHITE SPACE ANALYSIS
+            if "white space" in query or "gap" in query or "opportunity" in query:
+                # Find attributes furthest from ANY brand
+                df_a['MinBrandDist'] = df_a.apply(lambda r: np.min(np.sqrt((df_b['x'] - r['x'])**2 + (df_b['y'] - r['y'])**2)), axis=1)
+                white_space = df_a.sort_values('MinBrandDist', ascending=False).head(3)
+                
+                ws_text = "\n".join([f"* **{row['Label']}** (Distance: {row['MinBrandDist']:.2f})" for i, row in white_space.iterrows()])
+                return f"**Consumer White Space (Unclaimed Territory):**\n\nThe following attributes are currently furthest from any brand's core positioning:\n\n{ws_text}\n\n*These represent potential innovation opportunities.*"
+
+            # 3. BRAND AUDIT (Strengths/Weaknesses)
             for brand in df_b['Label']:
                 if brand.lower() in query:
                     brand_row = df_b[df_b['Label'] == brand].iloc[0]
                     bx, by = brand_row['x'], brand_row['y']
                     
-                    # Find competitors (closest brands)
+                    # Strengths (Closest)
+                    df_a['Dist'] = np.sqrt((df_a['x'] - bx)**2 + (df_a['y'] - by)**2)
+                    strengths = df_a.sort_values('Dist').head(3)['Label'].tolist()
+                    
+                    # Weaknesses (Furthest / Opposite Side)
+                    # We look for things far away, specifically in the opposite quadrant
+                    df_a['OppositeDist'] = np.sqrt((df_a['x'] - (-bx))**2 + (df_a['y'] - (-by))**2)
+                    weaknesses = df_a.sort_values('OppositeDist').head(3)['Label'].tolist()
+                    
+                    # Competitors
                     df_b['Dist'] = np.sqrt((df_b['x'] - bx)**2 + (df_b['y'] - by)**2)
                     competitors = df_b[df_b['Label'] != brand].sort_values('Dist').head(3)['Label'].tolist()
                     
-                    # Find defining attributes
-                    df_a['Dist'] = np.sqrt((df_a['x'] - bx)**2 + (df_a['y'] - by)**2)
-                    top_attrs = df_a.sort_values('Dist').head(3)['Label'].tolist()
-                    
-                    quadrant = ""
-                    if bx > 0 and by > 0: quadrant = "Top-Right (Leader/Niche)"
-                    elif bx < 0 and by > 0: quadrant = "Top-Left"
-                    elif bx < 0 and by < 0: quadrant = "Bottom-Left"
-                    else: quadrant = "Bottom-Right"
-                    
-                    return f"**Analysis for {brand}:**\n\n📍 **Position:** {quadrant} Quadrant.\n\n⚔️ **Closest Competitors:** {', '.join(competitors)}.\n\n✨ **Defining Traits:** {', '.join(top_attrs)}."
+                    return f"""**Strategic Audit for {brand}:**\n
+**✅ Strengths (Owns These):**
+* {strengths[0]}
+* {strengths[1]}
+* {strengths[2]}
 
-            # 2. ATTRIBUTE ANALYSIS
-            for attr in df_a['Label']:
-                if attr.lower() in query:
-                    attr_row = df_a[df_a['Label'] == attr].iloc[0]
-                    ax, ay = attr_row['x'], attr_row['y']
-                    
-                    # Find who owns it
-                    df_b['Dist'] = np.sqrt((df_b['x'] - ax)**2 + (df_b['y'] - ay)**2)
-                    owners = df_b.sort_values('Dist').head(3)['Label'].tolist()
-                    
-                    return f"**Attribute Analysis: '{attr}'**\n\n🏆 **Dominant Brands:** The brands strategically closest to this concept are **{', '.join(owners)}**."
+**❌ Weaknesses (Lacks These):**
+* {weaknesses[0]}
+* {weaknesses[1]}
+* {weaknesses[2]}
 
-            # 3. COMPARISON
-            if "compare" in query or "vs" in query:
-                return "To compare brands, look at their distance on the map. Closer means they compete directly for the same consumer mindshare. Further apart means they serve different needs."
+**⚔️ Primary Competitors:**
+* {', '.join(competitors)}"""
 
-            return "I can analyze specific **Brands** or **Statements**. Try asking: 'Tell me about [Brand]' or 'Who owns [Attribute]?'"
+            return "I can analyze **Themes**, **White Space**, or **Audit [Brand]**. Try asking: 'Where is the white space?' or 'Audit Nike'."
 
         # Chat UI
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        if prompt := st.chat_input("Ask about a brand or attribute..."):
+        if prompt := st.chat_input("Ask a strategic question..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
@@ -323,7 +325,6 @@ with tab3:
                 df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
                 df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
                 df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
-                
                 st.success("Cleaned!")
                 st.download_button("Download CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
             else: st.error("Could not find 'Weighted (000)' row.")
