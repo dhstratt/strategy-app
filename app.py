@@ -7,7 +7,7 @@ import io
 import pickle
 
 # --- CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
+st.set_page_config(layout="wide", page_title="The Consumer Landscape")
 
 # --- CUSTOM CSS: LOAD GOTHAM ROUNDED ALTERNATIVE (NUNITO) ---
 st.markdown("""
@@ -34,11 +34,11 @@ if 'processed_data' not in st.session_state:
     st.session_state.processed_data = False
 if 'messages' not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "I am your Strategy Co-Pilot. You can ask me:\n- **'What are the main themes?'** (Map Dimensions)\n- **'Where is the white space?'** (Unclaimed Opportunities)\n- **'Audit [Brand Name]'** (Strengths & Weaknesses)"}
+        {"role": "assistant", "content": "I am your Landscape Guide. You can ask me:\n- **'What are the main themes?'** (Map Dimensions)\n- **'Where is the white space?'** (Unclaimed Opportunities)\n- **'Audit [Brand Name]'** (Strengths & Weaknesses)"}
     ]
 
 # --- TABS ---
-tab1, tab2, tab3 = st.tabs(["🧠 The Strategy Engine", "💬 AI Strategy Chat", "🧹 MRI Data Cleaner"])
+tab1, tab2, tab3 = st.tabs(["🗺️ The Consumer Landscape", "💬 AI Landscape Chat", "🧹 MRI Data Cleaner"])
 
 # --- HELPERS ---
 def clean_df(df):
@@ -57,10 +57,10 @@ def load_file(file):
     else: return pd.read_excel(file)
 
 # ==========================================
-# TAB 1: THE STRATEGY ENGINE
+# TAB 1: THE CONSUMER LANDSCAPE
 # ==========================================
 with tab1:
-    st.title("🧠 The Strategy Engine")
+    st.title("🗺️ The Consumer Landscape")
     
     col_nav, col_main = st.columns([1, 4])
     
@@ -86,7 +86,7 @@ with tab1:
 
         # SAVE
         with st.expander("💾 Save Project", expanded=True):
-            proj_name = st.text_input("Project Name", "My_Strategy_Map")
+            proj_name = st.text_input("Project Name", "My_Landscape_Map")
             if st.session_state.processed_data:
                 project_data = {
                     'df_brands': st.session_state.df_brands,
@@ -302,7 +302,7 @@ with tab1:
 # TAB 2: AI STRATEGY CHAT
 # ==========================================
 with tab2:
-    st.header("💬 AI Strategy Chat")
+    st.header("💬 AI Landscape Chat")
     
     if not st.session_state.processed_data:
         st.warning("👈 Please upload and process data in 'The Strategy Engine' tab first.")
@@ -325,17 +325,17 @@ with tab2:
                 ws_text = "\n".join([f"* **{row['Label']}** (Distance: {row['MinBrandDist']:.2f})" for i, row in white_space.iterrows()])
                 return f"**Consumer White Space:**\n\nThe following attributes are furthest from any brand:\n\n{ws_text}"
 
-            for brand in df_b['Label']:
-                if brand.lower() in query:
-                    brand_row = df_b[df_b['Label'] == brand].iloc[0]
-                    bx, by = brand_row['x'], brand_row['y']
-                    df_a['Dist'] = np.sqrt((df_a['x'] - bx)**2 + (df_a['y'] - by)**2)
-                    strengths = df_a.sort_values('Dist').head(3)['Label'].tolist()
-                    df_a['OppositeDist'] = np.sqrt((df_a['x'] - (-bx))**2 + (df_a['y'] - (-by))**2)
-                    weaknesses = df_a.sort_values('OppositeDist').head(3)['Label'].tolist()
-                    df_b['Dist'] = np.sqrt((df_b['x'] - bx)**2 + (df_b['y'] - by)**2)
-                    competitors = df_b[df_b['Label'] != brand].sort_values('Dist').head(3)['Label'].tolist()
-                    return f"""**Strategic Audit for {brand}:**\n\n**✅ Strengths (Owns These):**\n* {strengths[0]}\n* {strengths[1]}\n* {strengths[2]}\n\n**❌ Weaknesses (Lacks These):**\n* {weaknesses[0]}\n* {weaknesses[1]}\n* {weaknesses[2]}\n\n**⚔️ Primary Competitors:**\n* {', '.join(competitors)}"""
+            for b in df_b['Label']:
+                if b.lower() in query:
+                    br = df_b[df_b['Label'] == b].iloc[0]
+                    df_a['D'] = np.sqrt((df_a['x'] - br['x'])**2 + (df_a['y'] - br['y'])**2)
+                    df_a['OD'] = np.sqrt((df_a['x'] - (-br['x']))**2 + (df_a['y'] - (-br['y']))**2)
+                    df_b['D'] = np.sqrt((df_b['x'] - br['x'])**2 + (df_b['y'] - br['y'])**2)
+                    
+                    s = df_a.sort_values('D').head(3)['Label'].tolist()
+                    w = df_a.sort_values('OD').head(3)['Label'].tolist()
+                    c = df_b[df_b['Label']!=b].sort_values('D').head(3)['Label'].tolist()
+                    return f"**Strategic Audit for {b}:**\n\n**✅ Strengths (Owns These):**\n* {s[0]}\n* {s[1]}\n* {s[2]}\n\n**❌ Weaknesses (Lacks These):**\n* {w[0]}\n* {w[1]}\n* {w[2]}\n\n**⚔️ Primary Competitors:**\n* {', '.join(c)}"
 
             return "I can analyze **Themes**, **White Space**, or **Audit [Brand]**."
 
