@@ -99,14 +99,14 @@ with tab1:
         
         # A. Base Map Config
         st.subheader("Base Map")
-        show_base = st.checkbox("Show Base Map", value=True, key="show_base")
+        show_base = st.checkbox("Show Base Map", value=True, key="show_base_master")
         
         base_configs = {"brands": True, "attrs": True, "sel_brands": [], "sel_attrs": []}
         
         if show_base:
             c1, c2 = st.columns(2)
-            base_configs["brands"] = c1.checkbox("Columns", True)
-            base_configs["attrs"] = c2.checkbox("Rows", True)
+            base_configs["brands"] = c1.checkbox("Columns", True, key="chk_cols_base")
+            base_configs["attrs"] = c2.checkbox("Rows", True, key="chk_rows_base")
         
         # B. Passive Configs
         passive_configs = []
@@ -181,10 +181,12 @@ with tab1:
                         if user_mode == "Rows (Stars)": is_row_projection = True
                         elif user_mode == "Columns (Diamonds)": is_row_projection = False
                         else:
+                            # Auto
                             if len(common_brands) > len(common_attrs): is_row_projection = True
                             else: is_row_projection = False
                         
                         if is_row_projection:
+                            # Project ROWS (Stars)
                             if len(common_brands) > 0:
                                 p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
@@ -197,6 +199,7 @@ with tab1:
                                 res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                                 passive_layer_data.append(res)
                         else:
+                            # Project COLS (Diamonds)
                             if len(common_attrs) > 0:
                                 p_aligned = p_clean.reindex(df_math.index).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
@@ -226,14 +229,18 @@ with tab1:
                     all_b = sorted(df_brands['Label'].tolist())
                     all_a = sorted(df_attrs['Label'].tolist())
                     
-                    if not st.checkbox("All Columns", True):
+                    # Columns Filter
+                    if not st.checkbox("Show All Columns", True, key="chk_all_cols"):
                         base_configs["sel_brands"] = st.multiselect("Columns:", all_b, default=all_b)
                     else: base_configs["sel_brands"] = all_b
                     
-                    if not st.checkbox("All Rows", False):
+                    # Rows Filter - CHANGED DEFAULT TO TRUE
+                    if not st.checkbox("Show All Rows", True, key="chk_all_rows"):
+                         # Only used if unchecked
                         top_15 = df_attrs.sort_values('Distinctiveness', ascending=False).head(15)['Label'].tolist()
                         base_configs["sel_attrs"] = st.multiselect("Rows:", all_a, default=top_15)
-                    else: base_configs["sel_attrs"] = all_a
+                    else: 
+                        base_configs["sel_attrs"] = all_a
             
             # Passive Filters
             for i, layer in enumerate(passive_layer_data):
@@ -264,16 +271,16 @@ with tab1:
             if not hero.empty:
                 hx, hy = hero.iloc[0]['x'], hero.iloc[0]['y']
                 
-                # 1. BASE MAP DISTANCES
+                # 1. BASE MAP DISTANCES (Core)
                 if show_base:
-                    # Filter active statements only
+                    # Filter to currently selected active rows
                     current_attrs = df_attrs[df_attrs['Label'].isin(base_configs["sel_attrs"])].copy()
                     if not current_attrs.empty:
                         current_attrs['Dist'] = np.sqrt((current_attrs['x'] - hx)**2 + (current_attrs['y'] - hy)**2)
                         closest_base = current_attrs.sort_values('Dist').head(5)['Label'].tolist()
                         highlight_labels.extend(closest_base)
                 
-                # 2. PASSIVE LAYER DISTANCES
+                # 2. PASSIVE LAYER DISTANCES (New)
                 for layer in passive_layer_data:
                     if not layer.empty and layer['Visible'].iloc[0]:
                         layer_copy = layer.copy()
@@ -286,8 +293,8 @@ with tab1:
             op = 1.0 if is_brand else 0.7
             if focus_brand != "None":
                 if lbl == focus_brand: return (c, 1.0) # Hero
-                if lbl in highlight_labels: return (c, 1.0) # Related (Base or Passive)
-                return ('#d3d3d3', 0.2) # Dimmed
+                if lbl in highlight_labels: return (c, 1.0) # Top Related
+                return ('#d3d3d3', 0.35) # Dimmed (Ghosted) - Increased opacity
             return c, op
 
         # 1. CORE COLUMNS (BRANDS)
@@ -301,7 +308,7 @@ with tab1:
             
             for _, r in plot_brands.iterrows():
                 c, o = get_style(r['Label'], True)
-                if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
+                if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
 
         # 2. CORE ROWS (ATTRIBUTES)
         if show_base and base_configs["attrs"]:
@@ -314,7 +321,7 @@ with tab1:
 
             for _, r in plot_attrs.iterrows():
                 c, o = get_style(r['Label'], False)
-                if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
+                if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
 
         # 3. PASSIVE LAYERS
         pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
@@ -322,7 +329,6 @@ with tab1:
             if not layer.empty and layer['Visible'].iloc[0]:
                 pc = pass_colors[i % len(pass_colors)]
                 
-                # Special logic for passive items in spotlight
                 lc = []
                 lo = []
                 for _, r in layer.iterrows():
@@ -332,7 +338,7 @@ with tab1:
                             lo.append(1.0)
                         else:
                             lc.append('#d3d3d3')
-                            lo.append(0.2)
+                            lo.append(0.35) # Ghosted
                     else:
                         lc.append(pc)
                         lo.append(0.9)
