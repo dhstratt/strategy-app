@@ -249,4 +249,32 @@ fig.add_shape(type="rect", x0=0, y0=0, x1=df_brands['x'].max()*1.2, y1=df_brands
 fig.add_shape(type="rect", x0=df_brands['x'].min()*1.2, y0=df_brands['y'].min()*1.2, x1=0, y1=0, 
               fillcolor="blue", opacity=0.03, layer="below", line_width=0)
 
-st.plotly_chart(fig, use_container_width=True
+st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
+
+# --- AUTOMATED STORY GENERATOR ---
+st.subheader("📝 Strategic Interpretation")
+
+def get_quadrant_winner(df, q_x, q_y):
+    quad = df[(df['x'] * q_x > 0) & (df['y'] * q_y > 0)]
+    if not quad.empty:
+        return quad.sort_values('Distinctiveness', ascending=False).iloc[0]['Label']
+    return "Niche Players"
+
+winner_ne = get_quadrant_winner(df_brands, 1, 1)   
+winner_nw = get_quadrant_winner(df_brands, -1, 1)  
+winner_se = get_quadrant_winner(df_brands, 1, -1)  
+winner_sw = get_quadrant_winner(df_brands, -1, -1) 
+
+explanation = f"""
+**1. The Primary Tension (Horizontal):** The market is primarily divided by **{theme_left}** vs. **{theme_right}**.
+
+**2. The Secondary Tension (Vertical):** There is a secondary split driven by **{theme_top}** vs. **{theme_bottom}**.
+
+**3. The Strategic Battlegrounds:**
+* **Top Right ({theme_right} & {theme_top}):** Dominated by **{winner_ne}**.
+* **Top Left ({theme_left} & {theme_top}):** Dominated by **{winner_nw}**.
+* **Bottom Right ({theme_right} & {theme_bottom}):** Dominated by **{winner_se}**.
+* **Bottom Left ({theme_left} & {theme_bottom}):** Dominated by **{winner_sw}**.
+"""
+
+st.markdown(explanation)
