@@ -46,7 +46,7 @@ if uploaded_file is not None:
                 st.error("Error: Data is empty.")
                 st.stop()
 
-            # 4. THE MATH (SVD - Runs on FULL data)
+            # 4. THE MATH (SVD)
             N = cleaned_df.values
             P = N / N.sum()
             r = P.sum(axis=1)
@@ -61,58 +61,51 @@ if uploaded_file is not None:
             col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
             
             # 5. PREPARE VISUALIZATION DATAFRAMES
-            # Brands (Always visible)
+            # Brands
             df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
             df_brands['Label'] = cleaned_df.columns
             df_brands['Type'] = 'Brand'
-            df_brands['Size'] = 15 # Brands are big
+            df_brands['Size'] = 15
             
-            # Attributes (The ones we will filter)
+            # Attributes
             df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x', 'y'])
             df_attrs['Label'] = cleaned_df.index
             df_attrs['Type'] = 'Attribute'
-            df_attrs['Size'] = 8 # Attributes are smaller
+            df_attrs['Size'] = 8
             
-            # Calculate "Strategic Importance" (Distance from Center)
-            # Further out = More differentiating power
+            # Strategic Importance (Distance from Center)
             df_attrs['Importance'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
             
-            # --- 6. UX CONTROLS (The "Clutter Control") ---
+            # --- 6. UX CONTROLS ---
             st.sidebar.markdown("---")
             st.sidebar.subheader("🎨 Design Controls")
             
-            # Slider: How many attributes to show?
             total_attrs = len(df_attrs)
             n_show = st.sidebar.slider("Attribute Density (Most Important First)", 
                                      min_value=5, max_value=total_attrs, value=15)
             
-            # Toggle: Hide Labels?
             show_attr_labels = st.sidebar.checkbox("Show Attribute Labels", value=True)
             
             # --- FILTER LOGIC ---
-            # Sort attributes by importance and keep only the Top N
             top_attrs = df_attrs.sort_values('Importance', ascending=False).head(n_show)
-            
-            # Combine Brands + Filtered Attributes
             plot_data = pd.concat([df_brands, top_attrs])
             
             # Rounding
             plot_data['x'] = plot_data['x'].round(2)
             plot_data['y'] = plot_data['y'].round(2)
             
-            # --- PLOTTING ---
-            
-            # We use 'text' argument conditionally
+            # --- SMART LABEL LOGIC (THE FIX) ---
+            # Always create the SmartLabel column so Plotly doesn't crash
             if show_attr_labels:
-                text_col = 'Label'
+                # If checked, SmartLabel is just the Label
+                plot_data['SmartLabel'] = plot_data['Label']
             else:
-                # If unchecked, we create a new column where only Brands have text
+                # If unchecked, SmartLabel is blank for attributes
                 plot_data['SmartLabel'] = plot_data.apply(
                     lambda row: row['Label'] if row['Type'] == 'Brand' else '', axis=1
                 )
-                text_col = 'SmartLabel'
 
-            # Accuracy Score
+            # Accuracy
             inertia = s**2
             accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
             
@@ -122,17 +115,15 @@ if uploaded_file is not None:
             col2.caption(f"Showing the top {n_show} most differentiating attributes out of {total_attrs}.")
             
             # The Chart
-            fig = px.scatter(plot_data, x='x', y='y', text=text_col, color='Type',
-                            size='Size', size_max=15, # Use the size column we made
+            fig = px.scatter(plot_data, x='x', y='y', text='SmartLabel', color='Type',
+                            size='Size', size_max=15,
                             title="Strategic Perceptual Map (Clean View)", 
                             template="plotly_white", height=800,
                             color_discrete_map={'Brand': '#1f77b4', 'Attribute': '#d62728'},
+                            # Now safe because SmartLabel always exists
                             hover_data={'Label': True, 'x':':.2f', 'y':':.2f', 'Size':False, 'SmartLabel':False})
             
-            # Smart Text Positioning
             fig.update_traces(textposition='top center')
-            
-            # Design Tweaks
             fig.update_layout(
                 showlegend=True,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -142,11 +133,9 @@ if uploaded_file is not None:
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # 7. OPPORTUNITY FINDER (Calculated on ALL data, not just visible)
+            # 7. OPPORTUNITY FINDER
             st.subheader("🔭 Opportunity Finder (Top 5)")
-            st.caption("These opportunities are calculated using ALL data, even if hidden on the map.")
             
-            # Recalculate isolation on ALL attributes for integrity
             scores = []
             for _, attr in df_attrs.iterrows():
                 dists = np.linalg.norm(df_brands[['x','y']].values - attr[['x','y']].values, axis=1)
