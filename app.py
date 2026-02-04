@@ -167,18 +167,6 @@ with tab1:
         df_attrs = st.session_state.df_attrs
         passive_layer_data = st.session_state.passive_data
         
-        # 1. CALCULATE BOUNDS FOR AUTO-ZOOM
-        # Combine all visible coordinates to find the max extent
-        all_x = pd.concat([df_brands['x'], df_attrs['x']])
-        all_y = pd.concat([df_brands['y'], df_attrs['y']])
-        
-        # Check passive layers too
-        for layer in passive_layer_data:
-            all_x = pd.concat([all_x, layer['x']])
-            all_y = pd.concat([all_y, layer['y']])
-            
-        max_bound = max(all_x.abs().max(), all_y.abs().max()) * 1.1 # Add 10% padding
-        
         # CONTROLS
         with st.sidebar:
             st.header("🎯 Map Controls")
@@ -263,7 +251,7 @@ with tab1:
             lo = [0.9 if focus_brand == "None" else 0.2 for _ in range(len(layer))]
             fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=lc, opacity=lo, line=dict(width=1, color='white')), hovertext=layer['Label'], name=layer['LayerName'].iloc[0]))
 
-        # Annotations (Clean: No Background Box)
+        # Annotations (Transparent)
         anns = []
         for _, r in plot_brands.iterrows():
             c, o = get_style(r['Label'], True)
@@ -279,20 +267,17 @@ with tab1:
                 for _, r in layer.iterrows():
                     anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=pc, family="Nunito"), arrowcolor=pc))
 
-        # Layout (Auto-Zoom Fix)
+        # Layout (Auto-Fit)
         fig.update_layout(
             annotations=anns,
             title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center', 'font': {'family': 'Nunito', 'size': 20}},
             template="plotly_white", height=850,
-            xaxis=dict(showgrid=False, showticklabels=False, zeroline=True, range=[-max_bound, max_bound]),
-            yaxis=dict(showgrid=False, showticklabels=False, zeroline=True, range=[-max_bound, max_bound]),
+            xaxis=dict(showgrid=False, showticklabels=False, zeroline=True),
+            yaxis=dict(showgrid=False, showticklabels=False, zeroline=True),
+            # Locked Aspect Ratio + Auto Range
             yaxis_scaleanchor="x", yaxis_scaleratio=1,
             dragmode='pan'
         )
-        
-        # Quadrants (Dynamic Size)
-        fig.add_shape(type="rect", x0=0, y0=0, x1=max_bound, y1=max_bound, fillcolor="blue", opacity=0.03, layer="below", line_width=0)
-        fig.add_shape(type="rect", x0=-max_bound, y0=-max_bound, x1=0, y1=0, fillcolor="blue", opacity=0.03, layer="below", line_width=0)
 
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True, 'displayModeBar': True})
 
