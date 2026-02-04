@@ -56,9 +56,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+# --- SESSION STATE INITIALIZATION ---
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = False
+if 'passive_data' not in st.session_state:
+    st.session_state.passive_data = [] 
 if 'mindset_report' not in st.session_state:
     st.session_state.mindset_report = []
 if 'messages' not in st.session_state:
@@ -236,17 +238,16 @@ with tab1:
         
         mindset_report = []
         if enable_clustering and HAS_SKLEARN:
-            # --- UPDATED: TRUE CO-CLUSTERING ---
-            # 1. Gather ALL points (Active + All Passives) into one pool
+            # 1. Pool all data for co-clustering
             pool_data = df_attrs[['x', 'y']].copy()
             for layer in passive_layer_data:
                 pool_data = pd.concat([pool_data, layer[['x', 'y']]])
             
-            # 2. Fit K-Means on the ENTIRE pool
+            # 2. Fit K-Means
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool_data)
             centroids = kmeans.cluster_centers_
             
-            # 3. Predict clusters for every dataset independently
+            # 3. Predict clusters for all datasets
             df_attrs['Cluster'] = kmeans.predict(df_attrs[['x', 'y']])
             df_brands['Cluster'] = kmeans.predict(df_brands[['x', 'y']])
             for layer in passive_layer_data:
@@ -265,7 +266,6 @@ with tab1:
                         p_match['dist'] = np.sqrt((p_match['x'] - centroids[i][0])**2 + (p_match['y'] - centroids[i][1])**2)
                         c_passives_list.append(p_match)
                 
-                # Combine Signals
                 c_all_signals = pd.DataFrame()
                 if not c_actives.empty: c_all_signals = pd.concat([c_all_signals, c_actives[['Label', 'Weight', 'dist']]])
                 if c_passives_list: c_all_signals = pd.concat([c_all_signals, pd.concat(c_passives_list)[['Label', 'Weight', 'dist']]])
@@ -287,10 +287,8 @@ with tab1:
 
         with placeholder_filters.container():
             st.metric("Landscape Stability", f"{st.session_state.accuracy:.1f}%")
-            if st.session_state.accuracy < 60: st.warning("⚠️ Low Stability Map")
             st.divider()
-            all_b_labels = sorted(df_brands['Label'].tolist())
-            focus_brand = st.selectbox("Highlight Column:", ["None"] + all_b_labels)
+            focus_brand = st.selectbox("Highlight Column:", ["None"] + sorted(df_brands['Label'].tolist()))
             with st.expander("Filter Base Map"):
                 sel_brands = st.multiselect("Columns:", sorted(df_brands['Label'].tolist()), default=df_brands['Label'].tolist()) if not st.checkbox("All Columns", True) else df_brands['Label'].tolist()
                 sel_attrs = st.multiselect("Rows:", sorted(df_attrs['Label'].tolist()), default=df_attrs.sort_values('Weight', ascending=False).head(15)['Label'].tolist()) if not st.checkbox("All Rows", True) else df_attrs['Label'].tolist()
@@ -319,6 +317,7 @@ with tab1:
             if lbl == focus_brand or lbl in hl: return base_c, 1.0
             return '#d3d3d3', 0.2
 
+        # Brands
         if show_base_cols:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
             res = [get_so(r['Label'], '#1f77b4') for _, r in plot_b.iterrows()]
@@ -332,6 +331,7 @@ with tab1:
                     c, o = get_so(r['Label'], '#1f77b4')
                     if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
 
+        # Mindsets (Active Rows)
         if show_base_rows:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             if enable_clustering:
@@ -359,19 +359,44 @@ with tab1:
                         c, o = get_so(r['Label'], '#d62728')
                         if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
 
+        # Passives (Colored by Cluster)
         for i, layer in enumerate(passive_layer_data):
             if not layer.empty and layer['Visible'].iloc[0]:
-                bc = cluster_colors[i % len(cluster_colors)] if not enable_clustering else cluster_colors[layer['Cluster'].iloc[0] % len(cluster_colors)]
-                res = [get_so(r['Label'], bc) for _, r in layer.iterrows()]
+                
+                # Assign colors point-by-point based on the Unified Cluster ID
+                p_colors = []
+                p_opacities = []
+                
+                for _, r in layer.iterrows():
+                    # Get base color from the Cluster ID
+                    if enable_clustering and 'Cluster' in layer.columns:
+                        cid = int(r['Cluster'])
+                        base_c = cluster_colors[cid % len(cluster_colors)]
+                    else:
+                        base_c = cluster_colors[i % len(cluster_colors)]
+                    
+                    c, o = get_so(r['Label'], base_c)
+                    p_colors.append(c)
+                    p_opacities.append(o)
+
                 fig.add_trace(go.Scatter(
                     x=layer['x'], y=layer['y'], mode='markers',
-                    marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')),
+                    marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=p_colors, opacity=p_opacities, line=dict(width=1, color='white')),
                     text=layer['Label'], hoverinfo='text', name=layer['LayerName'].iloc[0]
                 ))
+                
                 if lbl_passive:
-                    for _, r in layer.iterrows():
-                        c, o = get_so(r['Label'], bc)
-                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=10))
+                    for idx, r in layer.iterrows():
+                        # Retrieve the specific color calculated for this point
+                        color_for_text = p_colors[idx] if idx < len(p_colors) else '#333'
+                        opacity_for_text = p_opacities[idx] if idx < len(p_opacities) else 1.0
+                        
+                        if opacity_for_text > 0.4:
+                            fig.add_annotation(
+                                x=r['x'], y=r['y'], text=r['Label'],
+                                showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=color_for_text,
+                                ax=0, ay=-15, font=dict(color=color_for_text, size=10)
+                            )
 
         fig.update_layout(title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center', 'font': {'family': 'Nunito', 'size': 20}}, template="plotly_white", height=850, xaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
