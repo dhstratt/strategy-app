@@ -55,6 +55,10 @@ with tab1:
             df_math = df_math.loc[(df_math != 0).any(axis=1)] 
             df_math = df_math.loc[:, (df_math != 0).any(axis=0)]
             
+            if df_math.empty:
+                st.error("Error: Dataset empty after cleaning. Please check your file.")
+                st.stop()
+            
             # SVD
             N = df_math.values
             P = N / N.sum()
@@ -65,6 +69,7 @@ with tab1:
             R = (P - E) / np.sqrt(E)
             U, s, Vh = np.linalg.svd(R, full_matrices=False)
             
+            # Accuracy
             inertia = s**2
             map_accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
             
@@ -113,12 +118,18 @@ with tab1:
                         res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                         passive_layer_data.append(res)
                     except: pass
+            
+            st.session_state.passive_data = passive_layer_data
 
             # 3. CONTROLS
             with st.sidebar:
                 st.header("🎯 Map Controls")
-                st.metric("Map Stability", f"{map_accuracy:.1f}%")
                 
+                # --- STABILITY GUARD ---
+                st.metric("Map Stability", f"{map_accuracy:.1f}%")
+                if map_accuracy < 60:
+                    st.error("⚠️ **Unstable Map:** Data accuracy is below 60%. The relationships shown may be distorted or not statistically significant.")
+
                 st.markdown("---")
                 st.subheader("🔦 Brand Spotlight")
                 all_b_labels = sorted(df_brands['Label'].tolist())
