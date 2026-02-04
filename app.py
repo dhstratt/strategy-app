@@ -44,6 +44,7 @@ def clean_df(df):
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
     df = df.fillna(0)
+    # The Assassin: Kill Study Universe
     df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower() and "base" not in str(c).lower()]
     return df[valid_cols]
@@ -335,35 +336,81 @@ with tab1:
             template="plotly_white", height=850,
             xaxis=dict(showgrid=False, showticklabels=False, zeroline=True),
             yaxis=dict(showgrid=False, showticklabels=False, zeroline=True),
-            yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan'
+            yaxis_scaleanchor="x", yaxis_scaleratio=1,
+            dragmode='pan'
         )
         
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True, 'displayModeBar': True})
 
 # ==========================================
-# TAB 2: AI CHAT (SAME AS BEFORE)
+# TAB 2: AI CHAT
 # ==========================================
 with tab2:
     st.header("💬 AI Landscape Chat")
     if not st.session_state.processed_data: st.warning("👈 Upload data first.")
     else:
-        # (AI Logic retained for brevity - works same as before)
         def analyze_query(query):
-            return "Analysis complete." # Placeholder for brevity, full logic in prev versions
-        
+            q, df_b, df_a = query.lower(), st.session_state.df_brands, st.session_state.df_attrs
+            
+            if "theme" in q or "axis" in q:
+                xm, xn = df_a.loc[df_a['x'].idxmax()]['Label'], df_a.loc[df_a['x'].idxmin()]['Label']
+                ym, yn = df_a.loc[df_a['y'].idxmax()]['Label'], df_a.loc[df_a['y'].idxmin()]['Label']
+                return f"**Themes:**\n* ↔️ **X-Axis:** {xn} to {xm}\n* ↕️ **Y-Axis:** {yn} to {ym}"
+
+            if "white space" in q:
+                df_a['D'] = df_a.apply(lambda r: np.min(np.sqrt((df_b['x']-r['x'])**2 + (df_b['y']-r['y'])**2)), axis=1)
+                ws = df_a.sort_values('D', ascending=False).head(3)
+                return "**White Space:**\n" + "\n".join([f"* {r['Label']}" for _, r in ws.iterrows()])
+
+            for b in df_b['Label']:
+                if b.lower() in q:
+                    br = df_b[df_b['Label']==b].iloc[0]
+                    df_a['D'] = np.sqrt((df_a['x']-br['x'])**2 + (df_a['y']-br['y'])**2)
+                    df_a['O'] = np.sqrt((df_a['x']-(-br['x']))**2 + (df_a['y']-(-br['y']))**2)
+                    df_b['D'] = np.sqrt((df_b['x']-br['x'])**2 + (df_b['y']-br['y'])**2)
+                    s = df_a.sort_values('D').head(3)['Label'].tolist()
+                    w = df_a.sort_values('O').head(3)['Label'].tolist()
+                    c = df_b[df_b['Label']!=b].sort_values('D').head(3)['Label'].tolist()
+                    return f"**Audit: {b}**\n✅ **Strengths:** {', '.join(s)}\n❌ **Weaknesses:** {', '.join(w)}\n⚔️ **Competitors:** {', '.join(c)}"
+            return "Ask about **Themes**, **White Space**, or **Audit [Column]**."
+
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
-        if p := st.chat_input("Ask..."):
+        if p := st.chat_input("Ask a question..."):
             st.session_state.messages.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
-            st.session_state.messages.append({"role": "assistant", "content": "I am analyzing..."})
+            r = analyze_query(p)
+            with st.chat_message("assistant"): st.markdown(r)
+            st.session_state.messages.append({"role": "assistant", "content": r})
 
 # ==========================================
-# TAB 3: CLEANER (SAME AS BEFORE)
+# TAB 3: CLEANER
 # ==========================================
 with tab3:
     st.header("🧹 MRI Data Cleaner")
     raw_mri = st.file_uploader("Upload Raw MRI", type=["csv", "xlsx", "xls"])
     if raw_mri:
-        # (Cleaner logic retained)
-        st.write("Cleaner Ready")
+        try:
+            if raw_mri.name.endswith('.csv'): df_raw = pd.read_csv(raw_mri, header=None)
+            else: df_raw = pd.read_excel(raw_mri, header=None)
+            metric_row_idx = -1
+            for i, row in df_raw.iterrows():
+                if row.astype(str).str.contains("Weighted (000)", regex=False).any(): metric_row_idx = i; break
+            if metric_row_idx != -1:
+                brand_row = df_raw.iloc[metric_row_idx - 1]
+                metric_row = df_raw.iloc[metric_row_idx]
+                data_rows = df_raw.iloc[metric_row_idx + 1:].copy()
+                cols, headers = [0], ['Attitude']
+                for c in range(1, len(metric_row)):
+                    if "Weighted" in str(metric_row[c]):
+                        brand = str(brand_row[c-1])
+                        if "Study Universe" not in brand and "Total" not in brand and brand != 'nan':
+                            cols.append(c); headers.append(brand)
+                df_clean = data_rows.iloc[:, cols]; df_clean.columns = headers
+                df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
+                df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
+                df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+                st.success("Cleaned!")
+                st.download_button("Download CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
+            else: st.error("Could not find 'Weighted (000)' row.")
+        except Exception as e: st.error(f"Error: {e}")
