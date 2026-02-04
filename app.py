@@ -89,8 +89,15 @@ with tab1:
                 except: st.error("Error loading file")
             proj_name = st.text_input("Project Name", "My_Landscape_Map")
             if st.session_state.processed_data:
-                project_data = {'df_brands': st.session_state.df_brands, 'df_attrs': st.session_state.df_attrs, 'passive_data': st.session_state.passive_data, 'accuracy': st.session_state.accuracy}
-                buffer = io.BytesIO(); pickle.dump(project_data, buffer); buffer.seek(0)
+                project_data = {
+                    'df_brands': st.session_state.df_brands, 
+                    'df_attrs': st.session_state.df_attrs, 
+                    'passive_data': st.session_state.passive_data, 
+                    'accuracy': st.session_state.accuracy
+                }
+                buffer = io.BytesIO()
+                pickle.dump(project_data, buffer)
+                buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
 
         uploaded_file = st.file_uploader("Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
@@ -130,8 +137,8 @@ with tab1:
                 st.session_state.df_attrs['Label'] = df_math.index
                 st.session_state.df_attrs['Weight'] = df_math.sum(axis=1).values
                 st.session_state.accuracy = (np.sum(s**2[:2]) / np.sum(s**2)) * 100
-                st.session_state.total_map_weight = df_math.sum().sum()
                 st.session_state.processed_data = True
+                
                 passive_layer_data = []
                 for cfg in passive_configs:
                     p_clean = clean_df(load_file(cfg["file"]))
@@ -157,14 +164,26 @@ with tab1:
         passive_layer_data = [rotate_coords(l.copy(), map_rotation) for l in st.session_state.passive_data]
         cluster_colors = px.colors.qualitative.Bold
         mindset_report = []
+        
+        # Calculate Total Weight safely from the attributes dataframe
+        total_weight_denominator = df_attrs['Weight'].sum() if 'Weight' in df_attrs.columns else 1.0
+
         if enable_clustering and HAS_SKLEARN:
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
             df_attrs['Cluster'] = kmeans.fit_predict(df_attrs[['x', 'y']])
-            centroids = kmeans.cluster_centers_; df_brands['Cluster'] = kmeans.predict(df_brands[['x', 'y']])
+            centroids = kmeans.cluster_centers_
+            df_brands['Cluster'] = kmeans.predict(df_brands[['x', 'y']])
             for i in range(num_clusters):
                 c_rows = df_attrs[df_attrs['Cluster'] == i].copy()
                 c_rows['dist'] = np.sqrt((c_rows['x'] - centroids[i][0])**2 + (c_rows['y'] - centroids[i][1])**2)
-                mindset_report.append({"id": i+1, "color": cluster_colors[i % len(cluster_colors)], "rows": c_rows.sort_values('dist').head(10)['Label'].tolist(), "full_rows": c_rows['Label'].tolist(), "brands": df_brands[df_brands['Cluster'] == i]['Label'].tolist(), "size": (c_rows['Weight'].sum() / st.session_state.total_map_weight)*100})
+                mindset_report.append({
+                    "id": i+1, 
+                    "color": cluster_colors[i % len(cluster_colors)], 
+                    "rows": c_rows.sort_values('dist').head(10)['Label'].tolist(), 
+                    "full_rows": c_rows['Label'].tolist(), 
+                    "brands": df_brands[df_brands['Cluster'] == i]['Label'].tolist(), 
+                    "size": (c_rows['Weight'].sum() / total_weight_denominator)*100
+                })
             for layer in passive_layer_data: 
                 if not layer.empty: layer['Cluster'] = kmeans.predict(layer[['x', 'y']])
         
@@ -185,7 +204,8 @@ with tab1:
             hl += active_attrs.sort_values('D').head(5)['Label'].tolist()
             for layer in passive_layer_data:
                 if not layer.empty and layer['Visible'].iloc[0]:
-                    l_copy = layer.copy(); l_copy['D'] = np.sqrt((l_copy['x']-hx)**2 + (l_copy['y']-hy)**2)
+                    l_copy = layer.copy()
+                    l_copy['D'] = np.sqrt((l_copy['x']-hx)**2 + (l_copy['y']-hy)**2)
                     hl += l_copy.sort_values('D').head(5)['Label'].tolist()
 
         def get_so(lbl, base_c):
@@ -240,13 +260,13 @@ with tab1:
                     st.markdown(f'<div class="mindset-card" style="border-left-color: {t["color"]};"><span class="size-badge">{t["size"]:.1f}% volume</span><h3 style="color: {t["color"]}; margin-top:0;">Mindset {t["id"]}</h3><p><b>Core:</b><br>{", ".join(t["rows"][:5])}</p><p><b>Brands:</b><br>{", ".join(t["brands"][:5])}</p></div>', unsafe_allow_html=True)
 
 # ==========================================
-# TAB 2 & 3 (AI CHAT & CLEANER - Unchanged)
+# TAB 2 & 3
 # ==========================================
 with tab2: st.header("💬 AI Chat"); st.write("Use the Landscape Guide.")
 with tab3: st.header("🧹 Cleaner"); st.write("Upload raw MRI data.")
 
 # ==========================================
-# TAB 4:📟 COUNT CODE MAKER (NEW)
+# TAB 4:📟 COUNT CODE MAKER
 # ==========================================
 with tab4:
     st.header("📟 Count Code Maker")
@@ -258,10 +278,6 @@ with tab4:
         for t in mindset_report:
             with st.expander(f"Mindset {t['id']} Target Code ({t['size']:.1f}% Reach)", expanded=True):
                 st.markdown(f"**Description:** This target is defined by individuals who agree with the following **{len(t['full_rows'])}** statements.")
-                
-                # Create the MRI string
                 mri_string = " OR ".join([f"[{r}]" for r in t['full_rows']])
-                
                 st.markdown(f'<div class="code-block">{mri_string}</div>', unsafe_allow_html=True)
-                
                 st.info(f"💡 **Math Check:** Summed Weighted Volume for these rows / Total Map Volume = **{t['size']:.2f}%**")
