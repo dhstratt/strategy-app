@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import collections
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
@@ -9,7 +10,7 @@ st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
 # --- MAIN APP ---
 st.title("🧠 The Strategy Engine")
 st.markdown("Upload your **Cleaned** CSV (Attributes in Col A, Brands in Cols B+).")
-st.caption("💡 **Pro Tip:** Scroll down to see the AI-generated story of the map.")
+st.caption("💡 **Pro Tip:** Check the sidebar to rename the axes and 'interpret' the map strategy.")
 
 # 1. UPLOAD
 uploaded_file = st.sidebar.file_uploader("Upload Clean CSV/Excel", type=["csv", "xlsx"])
@@ -76,26 +77,52 @@ df_attrs['Label'] = cleaned_df.index
 df_attrs['Type'] = 'Attribute'
 df_attrs['Distinctiveness'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
 
-# --- THE COMPASS: FINDING THEMES ---
-# We grab the top 2 attributes for each cardinal direction to create a "Theme"
-def get_theme(df, direction):
-    if direction == 'Right': # Max X
-        return " & ".join(df.sort_values('x', ascending=False).head(2)['Label'].tolist())
-    elif direction == 'Left': # Min X
-        return " & ".join(df.sort_values('x', ascending=True).head(2)['Label'].tolist())
-    elif direction == 'Top': # Max Y
-        return " & ".join(df.sort_values('y', ascending=False).head(2)['Label'].tolist())
-    elif direction == 'Bottom': # Min Y
-        return " & ".join(df.sort_values('y', ascending=True).head(2)['Label'].tolist())
+# --- THE INTERPRETATION ENGINE ---
+# This function finds the most common meaningful word in the top attributes to "Guess" the theme
+def suggest_theme(df, direction, n=4):
+    # Sort by direction
+    if direction == 'Right': subset = df.sort_values('x', ascending=False).head(n)['Label']
+    elif direction == 'Left': subset = df.sort_values('x', ascending=True).head(n)['Label']
+    elif direction == 'Top': subset = df.sort_values('y', ascending=False).head(n)['Label']
+    elif direction == 'Bottom': subset = df.sort_values('y', ascending=True).head(n)['Label']
+    
+    # 1. Simple Join (Backup)
+    top_1 = subset.iloc[0]
+    
+    # 2. Smart Word Extraction
+    all_text = " ".join(subset.astype(str)).lower()
+    # Remove survey filler words
+    stop_words = ['i', 'the', 'and', 'to', 'of', 'a', 'in', 'is', 'it', 'my', 'for', 'on', 'with', 'often', 'prefer', 'like', 'typically', 'look', 'buy', 'make', 'feel', 'more', 'less', 'most']
+    words = [w.strip(".,()&") for w in all_text.split() if w.strip(".,()&") not in stop_words and len(w) > 2]
+    
+    if words:
+        most_common = collections.Counter(words).most_common(1)[0]
+        # If the most common word appears more than once, use it as the theme
+        if most_common[1] > 1:
+            return most_common[0].capitalize() # e.g., "Healthy"
+            
+    # Fallback: Return the top attribute (truncated)
+    return (top_1[:30] + '..') if len(top_1) > 30 else top_1
 
-theme_right = get_theme(df_attrs, 'Right')
-theme_left = get_theme(df_attrs, 'Left')
-theme_top = get_theme(df_attrs, 'Top')
-theme_bottom = get_theme(df_attrs, 'Bottom')
+# Generate Suggestions
+sugg_right = suggest_theme(df_attrs, 'Right')
+sugg_left = suggest_theme(df_attrs, 'Left')
+sugg_top = suggest_theme(df_attrs, 'Top')
+sugg_bottom = suggest_theme(df_attrs, 'Bottom')
 
-# --- UX CONTROLS ---
+# --- SIDEBAR: STRATEGIST CONTROLS ---
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎨 Map Controls")
+st.sidebar.subheader("🏷️ Axis Interpretation")
+st.sidebar.caption("The app has guessed the themes based on attribute clusters. **Rename them below to interpret the strategy.**")
+
+# Editable Inputs
+theme_left = st.sidebar.text_input("← Left Axis Theme", value=sugg_left)
+theme_right = st.sidebar.text_input("Right Axis Theme →", value=sugg_right)
+theme_bottom = st.sidebar.text_input("↓ Bottom Axis Theme", value=sugg_bottom)
+theme_top = st.sidebar.text_input("Top Axis Theme ↑", value=sugg_top)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎨 Display Controls")
 total_brands = len(df_brands)
 n_brands_show = st.sidebar.slider("Brand Density", 2, total_brands, total_brands)
 total_attrs = len(df_attrs)
@@ -105,7 +132,7 @@ show_attr_labels = st.sidebar.checkbox("Show Attribute Labels", value=True)
 # Focus Mode
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔦 Focus Mode")
-focus_brand = st.sidebar.selectbox("Highlight a specific brand story:", ["None"] + df_brands['Label'].tolist())
+focus_brand = st.sidebar.selectbox("Highlight a specific brand:", ["None"] + df_brands['Label'].tolist())
 
 # --- FILTERING LOGIC ---
 top_brands = df_brands.sort_values('Distinctiveness', ascending=False).head(n_brands_show)
@@ -116,11 +143,10 @@ accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
 st.divider()
 col1, col2 = st.columns([1, 3])
 col1.metric("Map Accuracy", f"{accuracy:.1f}%")
-
 if focus_brand != "None":
     col2.info(f"🔦 **Focus Mode Active:** Highlighting **{focus_brand}**.")
 else:
-    col2.caption(f"Showing **{n_brands_show}** brands and **{n_attrs_show}** attributes.")
+    col2.caption(f"Map interprets: **{theme_left} vs. {theme_right}** and **{theme_top} vs. {theme_bottom}**.")
 
 # --- INTERACTIVE MAP ---
 fig = go.Figure()
@@ -190,7 +216,7 @@ if show_attr_labels:
             bgcolor="rgba(255,255,255,0.6)"
         ))
 
-# 4. LAYOUT & STORY AXES
+# 4. LAYOUT & INTERPRETATION AXES
 fig.update_layout(
     annotations=annotations,
     title={
@@ -199,15 +225,15 @@ fig.update_layout(
     },
     template="plotly_white",
     height=800,
-    # The Story Axes (Top 2 Attributes)
+    # The Interpreted Axes
     xaxis=dict(
         title=f"← {theme_left} ........................................... {theme_right} →",
-        title_font=dict(size=14, color='black'),
+        title_font=dict(size=16, color='black', family="Arial Black"),
         zeroline=True, zerolinewidth=2, zerolinecolor='gray', showgrid=False
     ),
     yaxis=dict(
         title=f"← {theme_bottom} ... {theme_top} →",
-        title_font=dict(size=14, color='black'),
+        title_font=dict(size=16, color='black', family="Arial Black"),
         zeroline=True, zerolinewidth=2, zerolinecolor='gray', showgrid=False
     ),
     showlegend=False,
@@ -222,33 +248,32 @@ fig.add_shape(type="rect", x0=df_brands['x'].min()*1.2, y0=df_brands['y'].min()*
 
 st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
 
-# --- AUTOMATED STORY GENERATOR ---
-st.subheader("📝 Map Interpretation")
+# --- AUTOMATED STORY GENERATOR (Uses Your Labels) ---
+st.subheader("📝 Strategic Interpretation")
 
 # Find 'Winner' brands for each quadrant
 def get_quadrant_winner(df, q_x, q_y):
-    # Filter for quadrant (e.g., x > 0 and y > 0)
     quad = df[(df['x'] * q_x > 0) & (df['y'] * q_y > 0)]
     if not quad.empty:
         return quad.sort_values('Distinctiveness', ascending=False).iloc[0]['Label']
-    return "No clear leader"
+    return "Niche Players"
 
 winner_ne = get_quadrant_winner(df_brands, 1, 1)   # Top Right
 winner_nw = get_quadrant_winner(df_brands, -1, 1)  # Top Left
 winner_se = get_quadrant_winner(df_brands, 1, -1)  # Bottom Right
 winner_sw = get_quadrant_winner(df_brands, -1, -1) # Bottom Left
 
+# Story Logic
 explanation = f"""
-**The Main Conflict (Horizontal):** The biggest difference in this market is between **{theme_left}** on the left and **{theme_right}** on the right. 
-This dimension explains the majority of the strategic variance.
+**1. The Primary Tension (Horizontal):** The market is primarily divided by **{theme_left}** vs. **{theme_right}**. This is the single biggest differentiator between brands in this category.
 
-**The Secondary Conflict (Vertical):** Brands also split based on being more **{theme_top}** (Top) versus **{theme_bottom}** (Bottom).
+**2. The Secondary Tension (Vertical):** There is a secondary split driven by **{theme_top}** vs. **{theme_bottom}**.
 
-**The Strategic Territories (Quadrants):**
-* **Top Right ({theme_right} & {theme_top}):** Dominated by **{winner_ne}**.
-* **Top Left ({theme_left} & {theme_top}):** Dominated by **{winner_nw}**.
-* **Bottom Right ({theme_right} & {theme_bottom}):** Dominated by **{winner_se}**.
-* **Bottom Left ({theme_left} & {theme_bottom}):** Dominated by **{winner_sw}**.
+**3. The Strategic Battlegrounds:**
+* **The "High {theme_right} / High {theme_top}" Territory:** Currently dominated by **{winner_ne}**.
+* **The "High {theme_left} / High {theme_top}" Territory:** Currently dominated by **{winner_nw}**.
+* **The "High {theme_right} / Low {theme_top}" Territory:** Currently dominated by **{winner_se}**.
+* **The "High {theme_left} / Low {theme_top}" Territory:** Currently dominated by **{winner_sw}**.
 """
 
 st.markdown(explanation)
