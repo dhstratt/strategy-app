@@ -103,7 +103,6 @@ def rotate_coords(df, angle_deg):
 with tab1:
     st.title("🗺️ The Consumer Landscape")
     
-    # --- SIDEBAR ---
     with st.sidebar:
         st.header("📂 Data & Projects")
         with st.expander("💾 Manage Project", expanded=False):
@@ -171,7 +170,6 @@ with tab1:
         st.header("🔍 Filter & Highlight")
         placeholder_filters = st.empty()
 
-    # --- PROCESSING ---
     if uploaded_file is not None:
         try:
             df_raw = load_file(uploaded_file)
@@ -230,7 +228,6 @@ with tab1:
                 st.session_state.passive_data = passive_layer_data
         except Exception as e: st.error(f"Error: {e}")
 
-    # --- RENDER ---
     if st.session_state.processed_data:
         df_brands = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_attrs = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
@@ -247,11 +244,8 @@ with tab1:
             df_brands['Cluster'] = kmeans.predict(df_brands[['x', 'y']])
             
             for i in range(num_clusters):
-                # Core active signals
                 c_actives = df_attrs[df_attrs['Cluster'] == i].copy()
                 c_actives['dist'] = np.sqrt((c_actives['x'] - centroids[i][0])**2 + (c_actives['y'] - centroids[i][1])**2)
-                
-                # Integrated passive signals
                 c_passives_list = []
                 for layer in passive_layer_data:
                     l_check = layer.copy()
@@ -261,15 +255,12 @@ with tab1:
                         p_match['dist'] = np.sqrt((p_match['x'] - centroids[i][0])**2 + (p_match['y'] - centroids[i][1])**2)
                         c_passives_list.append(p_match)
                 
-                # Unified Pool (Active + Passive)
                 if c_passives_list:
                     c_all_signals = pd.concat([c_actives[['Label', 'Weight', 'dist']] , pd.concat(c_passives_list)[['Label', 'Weight', 'dist']]])
                 else:
                     c_all_signals = c_actives[['Label', 'Weight', 'dist']]
                 
                 sorted_all = c_all_signals.sort_values('dist').drop_duplicates(subset=['Label'])
-                
-                # REACH CALIBRATION (Average of top 5 signals)
                 reach_proxy = sorted_all.head(5)['Weight'].mean()
                 avg_weight = getattr(st.session_state, 'landscape_avg_weight', 1.0)
                 if avg_weight == 0: avg_weight = 1.0
@@ -277,7 +268,7 @@ with tab1:
                 
                 mindset_report.append({
                     "id": i+1, "color": cluster_colors[i % len(cluster_colors)], 
-                    "rows": sorted_all['Label'].tolist()[:10], # Unified Top 10 signals
+                    "rows": sorted_all['Label'].tolist()[:10], 
                     "brands": df_brands[df_brands['Cluster'] == i]['Label'].tolist(),
                     "size": reach_share, "threshold": 3 if reach_share > 10 else 2
                 })
@@ -286,14 +277,11 @@ with tab1:
 
         with placeholder_filters.container():
             st.metric("Landscape Stability", f"{st.session_state.accuracy:.1f}%")
-            if st.session_state.accuracy < 60: st.warning("⚠️ Low Stability Map")
             st.divider()
-            all_b_labels = sorted(df_brands['Label'].tolist())
-            focus_brand = st.selectbox("Highlight Column:", ["None"] + all_b_labels)
+            focus_brand = st.selectbox("Highlight Column:", ["None"] + sorted(df_brands['Label'].tolist()))
             with st.expander("Filter Base Map"):
-                sel_brands = st.multiselect("Columns:", all_b_labels, default=all_b_labels) if not st.checkbox("All Columns", True) else all_b_labels
-                all_a_labels = sorted(df_attrs['Label'].tolist())
-                sel_attrs = st.multiselect("Rows:", all_a_labels, default=all_a_labels[:10]) if not st.checkbox("All Rows", True) else all_a_labels
+                sel_brands = st.multiselect("Columns:", sorted(df_brands['Label'].tolist()), default=df_brands['Label'].tolist()) if not st.checkbox("All Columns", True) else df_brands['Label'].tolist()
+                sel_attrs = st.multiselect("Rows:", sorted(df_attrs['Label'].tolist()), default=df_attrs.sort_values('Weight', ascending=False).head(15)['Label'].tolist()) if not st.checkbox("All Rows", True) else df_attrs['Label'].tolist()
             for i, layer in enumerate(passive_layer_data):
                 if not layer.empty and layer['Visible'].iloc[0]:
                     with st.expander(f"Filter {layer['LayerName'].iloc[0]}"):
@@ -302,7 +290,7 @@ with tab1:
                             passive_layer_data[i] = layer[layer['Label'].isin(st.multiselect("Select:", l_labels, default=l_labels, key=f"f_sel_{i}"))]
         st.session_state.mindset_report = mindset_report
 
-        # --- PLOTTING (INTERACTIVE LABELS RESTORED) ---
+        # --- PLOTTING (INTERACTIVE LABELS WITH LINES) ---
         fig = go.Figure()
         hl = []
         if focus_brand != "None":
@@ -326,15 +314,14 @@ with tab1:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
             res = [get_so(r['Label'], '#1f77b4') for _, r in plot_b.iterrows()]
             fig.add_trace(go.Scatter(
-                x=plot_b['x'], y=plot_b['y'], 
-                mode='markers', # Markers only, text via annotation for interactivity
+                x=plot_b['x'], y=plot_b['y'], mode='markers',
                 marker=dict(size=10, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')),
                 text=plot_b['Label'], hoverinfo='text', name='Columns'
             ))
             if lbl_cols:
                 for _, r in plot_b.iterrows():
                     c, o = get_so(r['Label'], '#1f77b4')
-                    if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=False, yshift=10, font=dict(color=c, size=11))
+                    if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
 
         # Mindsets
         if show_base_rows:
@@ -351,7 +338,7 @@ with tab1:
                     if lbl_rows:
                         for _, r in sub.iterrows():
                             c, o = get_so(r['Label'], bc)
-                            if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=False, yshift=10, font=dict(color=c, size=11))
+                            if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
             else:
                 res = [get_so(r['Label'], '#d62728') for _, r in plot_a.iterrows()]
                 fig.add_trace(go.Scatter(
@@ -362,7 +349,7 @@ with tab1:
                 if lbl_rows:
                     for _, r in plot_a.iterrows():
                         c, o = get_so(r['Label'], '#d62728')
-                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=False, yshift=10, font=dict(color=c, size=11))
+                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
 
         # Passives
         for i, layer in enumerate(passive_layer_data):
@@ -377,7 +364,7 @@ with tab1:
                 if lbl_passive:
                     for _, r in layer.iterrows():
                         c, o = get_so(r['Label'], bc)
-                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=False, yshift=10, font=dict(color=c, size=10))
+                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=10))
 
         fig.update_layout(title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center', 'font': {'family': 'Nunito', 'size': 20}}, template="plotly_white", height=850, xaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
