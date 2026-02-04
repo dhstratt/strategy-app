@@ -88,7 +88,24 @@ with tab1:
         st.divider()
         st.header("📂 Data Import")
         uploaded_file = st.file_uploader("1. Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
+        
+        # Passive Files
         passive_files = st.file_uploader("2. Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
+        
+        # PASSIVE LAYER CONFIGURATION (DYNAMIC)
+        passive_configs = {}
+        if passive_files:
+            st.subheader("⚙️ Passive Settings")
+            for p_file in passive_files:
+                with st.expander(f"Settings: {p_file.name}", expanded=True):
+                    # Default to Auto, but allow override
+                    mode = st.radio(
+                        "Map items as:", 
+                        ["Auto (Detect)", "Statements (Stars)", "Brands (Diamonds)"],
+                        key=f"mode_{p_file.name}"
+                    )
+                    passive_configs[p_file.name] = mode
+
         st.divider()
 
     # --- PROCESS DATA ---
@@ -131,7 +148,7 @@ with tab1:
                 st.session_state.df_attrs = df_attrs
                 st.session_state.accuracy = map_accuracy
 
-                # Passive
+                # Process Passive Layers with User Config
                 passive_layer_data = []
                 if passive_files:
                     for p_file in passive_files:
@@ -141,23 +158,51 @@ with tab1:
                             common_brands = list(set(p_clean.columns) & set(df_math.columns))
                             common_attrs = list(set(p_clean.index) & set(df_math.index))
                             
-                            if len(common_brands) > len(common_attrs): # Attributes
-                                p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
-                                p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
-                                proj = p_prof.values @ col_coords[:, :2] / s[:2]
-                                res = pd.DataFrame(proj, columns=['x', 'y'])
-                                res['Label'] = p_aligned.index; res['Shape'] = 'star'
-                            else: # Brands
-                                p_aligned = p_clean.reindex(df_math.index).fillna(0)
-                                p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
-                                proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
-                                res = pd.DataFrame(proj, columns=['x', 'y'])
-                                res['Label'] = p_aligned.columns; res['Shape'] = 'diamond'
+                            # DECISION LOGIC
+                            user_mode = passive_configs.get(p_file.name, "Auto (Detect)")
                             
-                            res['LayerName'] = p_file.name
-                            res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
-                            passive_layer_data.append(res)
-                        except: pass
+                            is_row_projection = False
+                            
+                            if user_mode == "Statements (Stars)":
+                                is_row_projection = True
+                            elif user_mode == "Brands (Diamonds)":
+                                is_row_projection = False
+                            else:
+                                # Auto Heuristic: If more matching brands than attributes, assumes we want to map rows (attributes)
+                                if len(common_brands) > len(common_attrs):
+                                    is_row_projection = True
+                                else:
+                                    is_row_projection = False
+                            
+                            if is_row_projection:
+                                # Project ROWS (Stars) - using Brands as anchors
+                                if len(common_brands) > 0:
+                                    p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
+                                    p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
+                                    proj = p_prof.values @ col_coords[:, :2] / s[:2]
+                                    res = pd.DataFrame(proj, columns=['x', 'y'])
+                                    res['Label'] = p_aligned.index
+                                    res['Shape'] = 'star'
+                                    res['LayerName'] = p_file.name
+                                    res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
+                                    passive_layer_data.append(res)
+                            else:
+                                # Project COLS (Diamonds) - using Attributes as anchors
+                                if len(common_attrs) > 0:
+                                    p_aligned = p_clean.reindex(df_math.index).fillna(0)
+                                    p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
+                                    proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
+                                    res = pd.DataFrame(proj, columns=['x', 'y'])
+                                    res['Label'] = p_aligned.columns
+                                    res['Shape'] = 'diamond'
+                                    res['LayerName'] = p_file.name
+                                    res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
+                                    passive_layer_data.append(res)
+                                    
+                        except Exception as e:
+                            # st.error(f"Failed to process {p_file.name}: {e}") # Suppress to keep clean
+                            pass
+                            
                 st.session_state.passive_data = passive_layer_data
         except Exception as e: st.error(f"Error: {e}")
 
@@ -274,7 +319,6 @@ with tab1:
             template="plotly_white", height=850,
             xaxis=dict(showgrid=False, showticklabels=False, zeroline=True),
             yaxis=dict(showgrid=False, showticklabels=False, zeroline=True),
-            # Locked Aspect Ratio + Auto Range
             yaxis_scaleanchor="x", yaxis_scaleratio=1,
             dragmode='pan'
         )
