@@ -181,12 +181,10 @@ with tab1:
                         if user_mode == "Rows (Stars)": is_row_projection = True
                         elif user_mode == "Columns (Diamonds)": is_row_projection = False
                         else:
-                            # Auto
                             if len(common_brands) > len(common_attrs): is_row_projection = True
                             else: is_row_projection = False
                         
                         if is_row_projection:
-                            # Project ROWS (Stars)
                             if len(common_brands) > 0:
                                 p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
@@ -199,7 +197,6 @@ with tab1:
                                 res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                                 passive_layer_data.append(res)
                         else:
-                            # Project COLS (Diamonds)
                             if len(common_attrs) > 0:
                                 p_aligned = p_clean.reindex(df_math.index).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
@@ -259,18 +256,38 @@ with tab1:
         # PLOT LOGIC
         fig = go.Figure()
         
-        hero_related = []
+        # PRE-CALCULATE SPOTLIGHT ITEMS
+        highlight_labels = []
+        
         if focus_brand != "None":
             hero = df_brands[df_brands['Label'] == focus_brand]
             if not hero.empty:
                 hx, hy = hero.iloc[0]['x'], hero.iloc[0]['y']
+                
+                # 1. BASE MAP DISTANCES
+                if show_base:
+                    # Filter active statements only
+                    current_attrs = df_attrs[df_attrs['Label'].isin(base_configs["sel_attrs"])].copy()
+                    if not current_attrs.empty:
+                        current_attrs['Dist'] = np.sqrt((current_attrs['x'] - hx)**2 + (current_attrs['y'] - hy)**2)
+                        closest_base = current_attrs.sort_values('Dist').head(5)['Label'].tolist()
+                        highlight_labels.extend(closest_base)
+                
+                # 2. PASSIVE LAYER DISTANCES
+                for layer in passive_layer_data:
+                    if not layer.empty and layer['Visible'].iloc[0]:
+                        layer_copy = layer.copy()
+                        layer_copy['Dist'] = np.sqrt((layer_copy['x'] - hx)**2 + (layer_copy['y'] - hy)**2)
+                        closest_passive = layer_copy.sort_values('Dist').head(5)['Label'].tolist()
+                        highlight_labels.extend(closest_passive)
 
         def get_style(lbl, is_brand=False):
             c = '#1f77b4' if is_brand else '#d62728'
             op = 1.0 if is_brand else 0.7
             if focus_brand != "None":
-                if lbl == focus_brand: return (c, 1.0)
-                return ('#d3d3d3', 0.2)
+                if lbl == focus_brand: return (c, 1.0) # Hero
+                if lbl in highlight_labels: return (c, 1.0) # Related (Base or Passive)
+                return ('#d3d3d3', 0.2) # Dimmed
             return c, op
 
         # 1. CORE COLUMNS (BRANDS)
@@ -304,13 +321,31 @@ with tab1:
         for i, layer in enumerate(passive_layer_data):
             if not layer.empty and layer['Visible'].iloc[0]:
                 pc = pass_colors[i % len(pass_colors)]
-                lc = [pc if focus_brand == "None" else '#d3d3d3' for _ in range(len(layer))]
-                lo = [0.9 if focus_brand == "None" else 0.2 for _ in range(len(layer))]
                 
+                # Special logic for passive items in spotlight
+                lc = []
+                lo = []
+                for _, r in layer.iterrows():
+                    if focus_brand != "None":
+                        if r['Label'] in highlight_labels:
+                            lc.append(pc)
+                            lo.append(1.0)
+                        else:
+                            lc.append('#d3d3d3')
+                            lo.append(0.2)
+                    else:
+                        lc.append(pc)
+                        lo.append(0.9)
+
                 fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=lc, opacity=lo, line=dict(width=1, color='white')), hovertext=layer['Label'], name=layer['LayerName'].iloc[0]))
                 
-                if focus_brand == "None":
-                    for _, r in layer.iterrows():
+                # Annotations
+                for idx, r in layer.iterrows():
+                    should_show = True
+                    if focus_brand != "None" and r['Label'] not in highlight_labels:
+                        should_show = False
+                    
+                    if should_show:
                         fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=pc, family="Nunito"), arrowcolor=pc)
 
         # Layout
