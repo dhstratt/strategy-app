@@ -22,8 +22,8 @@ with tab1:
     # --- SIDEBAR ---
     with st.sidebar:
         st.header("📂 Data Manager")
-        uploaded_file = st.file_uploader("1. Upload Core Data", type=["csv", "xlsx"], key="active")
-        passive_files = st.file_uploader("2. Upload Passive Layers", type=["csv", "xlsx"], accept_multiple_files=True, key="passive")
+        uploaded_file = st.file_uploader("1. Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
+        passive_files = st.file_uploader("2. Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
         st.divider()
 
     def load_file(file):
@@ -31,25 +31,14 @@ with tab1:
         else: return pd.read_excel(file)
 
     def clean_df(df):
-        # 1. Set Index
         label_col = df.columns[0]
         df = df.set_index(label_col)
-        
-        # 2. Clean Numbers
         for col in df.columns:
             if df[col].dtype == 'object':
                 df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
         df = df.fillna(0)
-        
-        # 3. THE ASSASSIN (Rows): Remove 'Study Universe'
         df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
-        
-        # 4. THE ASSASSIN (Columns): Remove 'Study Universe'
-        valid_cols = [c for c in df.columns if 
-                      "study universe" not in str(c).lower() and 
-                      "total" not in str(c).lower() and 
-                      "base" not in str(c).lower()]
-        
+        valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower() and "base" not in str(c).lower()]
         return df[valid_cols]
 
     if uploaded_file is not None:
@@ -60,6 +49,10 @@ with tab1:
             df_math = df_math.loc[(df_math != 0).any(axis=1)] 
             df_math = df_math.loc[:, (df_math != 0).any(axis=0)]
             
+            if df_math.empty:
+                st.error("Error: All data was filtered out. Check if your file only contains 'Study Universe' or empty data.")
+                st.stop()
+
             # SVD
             N = df_math.values
             P = N / N.sum()
@@ -124,13 +117,14 @@ with tab1:
                 st.header("🎯 Map Controls")
                 st.metric("Map Stability", f"{map_accuracy:.1f}%")
                 
-                # --- SPOTLIGHT FEATURE ---
+                # --- SPOTLIGHT ---
                 st.markdown("---")
                 st.subheader("🔦 Brand Spotlight")
                 all_brand_labels = sorted(df_brands['Label'].tolist())
                 focus_brand = st.selectbox("Highlight a Brand Story:", ["None"] + all_brand_labels)
                 st.markdown("---")
 
+                # Core Controls
                 with st.expander("🔹 Core Brands", expanded=False):
                     if not st.checkbox("Show All Brands", value=True):
                         sel_brands = st.multiselect("Filter:", all_brand_labels, default=all_brand_labels)
@@ -143,24 +137,32 @@ with tab1:
                         sel_attrs = st.multiselect("Filter:", all_a, default=top_15)
                     else: sel_attrs = df_attrs['Label'].tolist()
 
+                # Passive Controls
                 sel_passive_data = []
                 if passive_layer_data:
                     st.subheader("🔸 Passive Layers")
                     for layer in passive_layer_data:
                         lname = layer['LayerName'].iloc[0]
-                        with st.expander(f"{lname}", expanded=False):
-                            if not st.checkbox(f"Show All: {lname}", value=True):
-                                all_l = sorted(layer['Label'].tolist())
-                                sel_l = st.multiselect("Filter:", all_l, default=all_l)
-                            else: sel_l = layer['Label'].tolist()
-                            if sel_l: sel_passive_data.append(layer[layer['Label'].isin(sel_l)])
+                        # 1. MASTER TOGGLE
+                        show_layer = st.checkbox(f"👁️ {lname}", value=True, key=f"vis_{lname}")
+                        
+                        if show_layer:
+                            # 2. FILTER WITHIN LAYER
+                            with st.expander(f"Filter {lname}", expanded=False):
+                                if not st.checkbox(f"Select All", value=True, key=f"all_{lname}"):
+                                    all_l = sorted(layer['Label'].tolist())
+                                    sel_l = st.multiselect("Filter Items:", all_l, default=all_l, key=f"mul_{lname}")
+                                else:
+                                    sel_l = layer['Label'].tolist()
+                                
+                                if sel_l:
+                                    sel_passive_data.append(layer[layer['Label'].isin(sel_l)])
 
             # --- SPOTLIGHT LOGIC ---
             plot_brands = df_brands[df_brands['Label'].isin(sel_brands)]
             plot_attrs = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             
             hero_related_attrs = []
-            
             if focus_brand != "None":
                 hero_row = df_brands[df_brands['Label'] == focus_brand]
                 if not hero_row.empty:
@@ -184,7 +186,7 @@ with tab1:
                         else: return '#d3d3d3', 0.2
                 return color, opacity
 
-            # 1. CORE BRANDS
+            # Core Brands
             b_colors, b_opacities = [], []
             for _, row in plot_brands.iterrows():
                 c, o = get_style(row['Label'], is_brand=True)
@@ -196,7 +198,7 @@ with tab1:
                 hoverinfo='text', hovertext=plot_brands['Label']
             ))
 
-            # 2. CORE ATTRIBUTES
+            # Core Attributes
             a_colors, a_opacities = [], []
             for _, row in plot_attrs.iterrows():
                 c, o = get_style(row['Label'], is_brand=False)
@@ -208,7 +210,7 @@ with tab1:
                 hoverinfo='text', hovertext=plot_attrs['Label']
             ))
 
-            # 3. PASSIVE LAYERS
+            # Passive Layers
             pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
             for i, layer in enumerate(sel_passive_data):
                 base_c = pass_colors[i % len(pass_colors)]
@@ -221,7 +223,7 @@ with tab1:
                     hoverinfo='text', hovertext=layer['Label']
                 ))
 
-            # 4. ANNOTATIONS
+            # Annotations
             annotations = []
             for i, row in plot_brands.iterrows():
                 c, o = get_style(row['Label'], is_brand=True)
@@ -277,16 +279,13 @@ with tab1:
 # ==========================================
 with tab2:
     st.header("🧹 MRI Data Cleaner")
-    st.markdown("Upload a raw MRI Crosstab (CSV or Excel) to clean it for the map.")
-    raw_mri = st.file_uploader("Upload Raw MRI", type=["csv", "xlsx"])
+    st.markdown("Upload a raw MRI Crosstab (CSV, XLSX, XLS).")
+    raw_mri = st.file_uploader("Upload Raw MRI", type=["csv", "xlsx", "xls"])
     
     if raw_mri:
         try:
-            # Handle CSV or Excel
-            if raw_mri.name.endswith('.csv'):
-                df_raw = pd.read_csv(raw_mri, header=None)
-            else:
-                df_raw = pd.read_excel(raw_mri, header=None)
+            if raw_mri.name.endswith('.csv'): df_raw = pd.read_csv(raw_mri, header=None)
+            else: df_raw = pd.read_excel(raw_mri, header=None)
                 
             metric_row_idx = -1
             for i, row in df_raw.iterrows():
@@ -301,15 +300,12 @@ with tab2:
                 for c in range(1, len(metric_row)):
                     if "Weighted" in str(metric_row[c]):
                         brand = str(brand_row[c-1])
-                        # EXPLICITLY BLOCK STUDY UNIVERSE
                         if "Study Universe" not in brand and "Total" not in brand and brand != 'nan':
                             cols.append(c); headers.append(brand)
                 df_clean = data_rows.iloc[:, cols]
                 df_clean.columns = headers
                 df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
                 df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
-                
-                # FINAL FILTER FOR ROWS IN CLEANER
                 df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
                 
                 st.success("Cleaned!")
