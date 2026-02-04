@@ -24,7 +24,7 @@ if 'processed_data' not in st.session_state:
     st.session_state.processed_data = False
 if 'messages' not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "I am your Landscape Guide. Ask me about **Themes**, **White Space**, or specific **Brands**."}
+        {"role": "assistant", "content": "I am your Landscape Guide. Ask me about **Themes**, **White Space**, or specific **Columns**."}
     ]
 
 # --- TABS ---
@@ -105,8 +105,8 @@ with tab1:
         
         if show_base:
             c1, c2 = st.columns(2)
-            base_configs["brands"] = c1.checkbox("Brands", True)
-            base_configs["attrs"] = c2.checkbox("Statements", True)
+            base_configs["brands"] = c1.checkbox("Columns", True)
+            base_configs["attrs"] = c2.checkbox("Rows", True)
         
         # B. Passive Configs
         passive_configs = []
@@ -116,7 +116,7 @@ with tab1:
                 with st.expander(f"{p_file.name}", expanded=False):
                     new_name = st.text_input("Layer Label", p_file.name, key=f"lbl_{p_file.name}")
                     is_visible = st.checkbox("Visible", value=True, key=f"vis_{p_file.name}")
-                    mode = st.radio("Map as:", ["Auto", "Statements (Stars)", "Brands (Diamonds)"], key=f"mode_{p_file.name}")
+                    mode = st.radio("Map as:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{p_file.name}")
                     
                     passive_configs.append({
                         "file": p_file,
@@ -152,12 +152,12 @@ with tab1:
                 
                 df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
                 df_brands['Label'] = df_math.columns
-                df_brands['Type'] = 'Brand'
+                df_brands['Type'] = 'Column'
                 df_brands['Distinctiveness'] = np.sqrt(df_brands['x']**2 + df_brands['y']**2)
                 
                 df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x', 'y'])
                 df_attrs['Label'] = df_math.index
-                df_attrs['Type'] = 'Attribute'
+                df_attrs['Type'] = 'Row'
                 df_attrs['Distinctiveness'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
 
                 st.session_state.processed_data = True
@@ -178,13 +178,15 @@ with tab1:
                         user_mode = config["mode"]
                         is_row_projection = False
                         
-                        if user_mode == "Statements (Stars)": is_row_projection = True
-                        elif user_mode == "Brands (Diamonds)": is_row_projection = False
+                        if user_mode == "Rows (Stars)": is_row_projection = True
+                        elif user_mode == "Columns (Diamonds)": is_row_projection = False
                         else:
+                            # Auto
                             if len(common_brands) > len(common_attrs): is_row_projection = True
                             else: is_row_projection = False
                         
                         if is_row_projection:
+                            # Project ROWS (Stars)
                             if len(common_brands) > 0:
                                 p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
@@ -197,6 +199,7 @@ with tab1:
                                 res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                                 passive_layer_data.append(res)
                         else:
+                            # Project COLS (Diamonds)
                             if len(common_attrs) > 0:
                                 p_aligned = p_clean.reindex(df_math.index).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
@@ -226,16 +229,16 @@ with tab1:
                     all_b = sorted(df_brands['Label'].tolist())
                     all_a = sorted(df_attrs['Label'].tolist())
                     
-                    if not st.checkbox("All Brands", True):
-                        base_configs["sel_brands"] = st.multiselect("Brands:", all_b, default=all_b)
+                    if not st.checkbox("All Columns", True):
+                        base_configs["sel_brands"] = st.multiselect("Columns:", all_b, default=all_b)
                     else: base_configs["sel_brands"] = all_b
                     
-                    if not st.checkbox("All Statements", False):
+                    if not st.checkbox("All Rows", False):
                         top_15 = df_attrs.sort_values('Distinctiveness', ascending=False).head(15)['Label'].tolist()
-                        base_configs["sel_attrs"] = st.multiselect("Statements:", all_a, default=top_15)
+                        base_configs["sel_attrs"] = st.multiselect("Rows:", all_a, default=top_15)
                     else: base_configs["sel_attrs"] = all_a
             
-            # Passive Filters (FIXED: Checks if empty)
+            # Passive Filters
             for i, layer in enumerate(passive_layer_data):
                 if not layer.empty and layer['Visible'].iloc[0]:
                     with st.expander(f"Filter {layer['LayerName'].iloc[0]}", expanded=False):
@@ -248,7 +251,7 @@ with tab1:
             st.metric("Map Stability", f"{st.session_state.accuracy:.1f}%")
             if st.session_state.accuracy < 60: st.error("⚠️ Unstable Map")
 
-            st.subheader("🔦 Brand Spotlight")
+            st.subheader("🔦 Column Spotlight")
             all_b_spot = sorted(df_brands['Label'].tolist())
             focus_brand = st.selectbox("Highlight:", ["None"] + all_b_spot)
 
@@ -270,33 +273,33 @@ with tab1:
                 return ('#d3d3d3', 0.2)
             return c, op
 
-        # 1. CORE BRANDS
+        # 1. CORE COLUMNS (BRANDS)
         if show_base and base_configs["brands"]:
             plot_brands = df_brands[df_brands['Label'].isin(base_configs["sel_brands"])]
             bc, bo = [], []
             for _, r in plot_brands.iterrows():
                 c, o = get_style(r['Label'], True)
                 bc.append(c); bo.append(o)
-            fig.add_trace(go.Scatter(x=plot_brands['x'], y=plot_brands['y'], mode='markers', marker=dict(size=10, color=bc, opacity=bo, line=dict(width=1, color='white')), hovertext=plot_brands['Label'], name='Brands'))
+            fig.add_trace(go.Scatter(x=plot_brands['x'], y=plot_brands['y'], mode='markers', marker=dict(size=10, color=bc, opacity=bo, line=dict(width=1, color='white')), hovertext=plot_brands['Label'], name='Columns'))
             
             for _, r in plot_brands.iterrows():
                 c, o = get_style(r['Label'], True)
                 if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
 
-        # 2. CORE ATTRIBUTES
+        # 2. CORE ROWS (ATTRIBUTES)
         if show_base and base_configs["attrs"]:
             plot_attrs = df_attrs[df_attrs['Label'].isin(base_configs["sel_attrs"])]
             ac, ao = [], []
             for _, r in plot_attrs.iterrows():
                 c, o = get_style(r['Label'], False)
                 ac.append(c); ao.append(o)
-            fig.add_trace(go.Scatter(x=plot_attrs['x'], y=plot_attrs['y'], mode='markers', marker=dict(size=7, color=ac, opacity=ao), hovertext=plot_attrs['Label'], name='Statements'))
+            fig.add_trace(go.Scatter(x=plot_attrs['x'], y=plot_attrs['y'], mode='markers', marker=dict(size=7, color=ac, opacity=ao), hovertext=plot_attrs['Label'], name='Rows'))
 
             for _, r in plot_attrs.iterrows():
                 c, o = get_style(r['Label'], False)
                 if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
 
-        # 3. PASSIVE LAYERS (FIXED: Checks if empty)
+        # 3. PASSIVE LAYERS
         pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
         for i, layer in enumerate(passive_layer_data):
             if not layer.empty and layer['Visible'].iloc[0]:
@@ -352,7 +355,7 @@ with tab2:
                     w = df_a.sort_values('O').head(3)['Label'].tolist()
                     c = df_b[df_b['Label']!=b].sort_values('D').head(3)['Label'].tolist()
                     return f"**Audit: {b}**\n✅ **Strengths:** {', '.join(s)}\n❌ **Weaknesses:** {', '.join(w)}\n⚔️ **Competitors:** {', '.join(c)}"
-            return "Ask about **Themes**, **White Space**, or **Audit [Brand]**."
+            return "Ask about **Themes**, **White Space**, or **Audit [Column]**."
 
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
