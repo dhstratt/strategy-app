@@ -104,3 +104,48 @@ if uploaded_file is not None:
             else:
                 plot_data['SmartLabel'] = plot_data.apply(
                     lambda row: row['Label'] if row['Type'] == 'Brand' else '', axis=1
+                )
+
+            # Accuracy
+            inertia = s**2
+            accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
+            
+            st.divider()
+            col1, col2 = st.columns([1, 3])
+            col1.metric("Map Accuracy", f"{accuracy:.1f}%")
+            col2.caption(f"Showing the top {n_show} most differentiating attributes out of {total_attrs}.")
+            
+            # The Chart
+            fig = px.scatter(plot_data, x='x', y='y', text='SmartLabel', color='Type',
+                            size='Size', size_max=15,
+                            title="Strategic Perceptual Map (Live View)", 
+                            template="plotly_white", height=800,
+                            color_discrete_map={'Brand': '#1f77b4', 'Attribute': '#d62728'},
+                            hover_data={'Label': True, 'x':':.2f', 'y':':.2f', 'Size':False, 'SmartLabel':False})
+            
+            fig.update_traces(textposition='top center')
+            fig.update_layout(
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                xaxis=dict(zeroline=True, zerolinewidth=2, zerolinecolor='gray', showgrid=False),
+                yaxis=dict(zeroline=True, zerolinewidth=2, zerolinecolor='gray', showgrid=False)
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 7. OPPORTUNITY FINDER
+            st.subheader("🔭 Opportunity Finder (Top 5)")
+            st.caption("Calculated using ALL data, regardless of filter settings.")
+            
+            scores = []
+            for _, attr in df_attrs.iterrows():
+                dists = np.linalg.norm(df_brands[['x','y']].values - attr[['x','y']].values, axis=1)
+                scores.append(dists.min())
+            
+            df_attrs['Isolation'] = scores
+            df_attrs['Isolation'] = df_attrs['Isolation'].round(2)
+            
+            st.table(df_attrs.sort_values('Isolation', ascending=False).head(5)[['Label', 'Isolation']])
+            
+    except Exception as e:
+        st.error(f"Something went wrong: {e}")
