@@ -176,37 +176,58 @@ with tab1:
                         p_df = load_file(cfg["file"])
                         p_clean = clean_df(p_df)
                         
+                        # PRE-CALC MODES
+                        # Determine if we are mapping Rows or Columns
+                        # If user says Auto, we check overlap counts
+                        
+                        # Overlap Checks
                         common_brands = list(set(p_clean.columns) & set(df_math.columns))
                         common_attrs = list(set(p_clean.index) & set(df_math.index))
                         
-                        # Determine Mode
+                        user_mode = cfg["mode"]
                         is_rows = False
-                        if cfg["mode"] == "Rows (Stars)": is_rows = True
-                        elif cfg["mode"] == "Columns (Diamonds)": is_rows = False
+                        
+                        if user_mode == "Rows (Stars)": is_rows = True
+                        elif user_mode == "Columns (Diamonds)": is_rows = False
                         else: is_rows = True if len(common_brands) > len(common_attrs) else False
                         
-                        if is_rows and len(common_brands) > 0:
-                            # Map Rows
-                            p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
-                            p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
-                            proj = p_prof.values @ col_coords[:, :2] / s[:2]
-                            res = pd.DataFrame(proj, columns=['x', 'y'])
-                            res['Label'] = p_aligned.index
-                            res['Shape'] = 'star'
-                            res['LayerName'] = cfg["name"]
-                            res['Visible'] = cfg["show"]
-                            passive_layer_data.append(res)
-                        elif not is_rows and len(common_attrs) > 0:
-                            # Map Columns
-                            p_aligned = p_clean.reindex(df_math.index).fillna(0)
-                            p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
-                            proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
-                            res = pd.DataFrame(proj, columns=['x', 'y'])
-                            res['Label'] = p_aligned.columns
-                            res['Shape'] = 'diamond'
-                            res['LayerName'] = cfg["name"]
-                            res['Visible'] = cfg["show"]
-                            passive_layer_data.append(res)
+                        # --- DE-DUPLICATION LOGIC ---
+                        if is_rows:
+                            # 1. Filter: Keep only NEW Rows
+                            unique_rows = [r for r in p_clean.index if r not in df_math.index]
+                            p_clean = p_clean.loc[unique_rows]
+                            
+                            if p_clean.empty: continue # Nothing new to map
+                            
+                            # 2. Map
+                            if len(common_brands) > 0:
+                                p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
+                                p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
+                                proj = p_prof.values @ col_coords[:, :2] / s[:2]
+                                res = pd.DataFrame(proj, columns=['x', 'y'])
+                                res['Label'] = p_aligned.index
+                                res['Shape'] = 'star'
+                                res['LayerName'] = cfg["name"]
+                                res['Visible'] = cfg["show"]
+                                passive_layer_data.append(res)
+                        else:
+                            # 1. Filter: Keep only NEW Columns
+                            unique_cols = [c for c in p_clean.columns if c not in df_math.columns]
+                            p_clean = p_clean[unique_cols]
+                            
+                            if p_clean.empty: continue # Nothing new to map
+                            
+                            # 2. Map
+                            if len(common_attrs) > 0:
+                                p_aligned = p_clean.reindex(df_math.index).fillna(0)
+                                p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
+                                proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
+                                res = pd.DataFrame(proj, columns=['x', 'y'])
+                                res['Label'] = p_aligned.columns
+                                res['Shape'] = 'diamond'
+                                res['LayerName'] = cfg["name"]
+                                res['Visible'] = cfg["show"]
+                                passive_layer_data.append(res)
                     except: pass
                 st.session_state.passive_data = passive_layer_data
 
@@ -260,7 +281,7 @@ with tab1:
                     active_attrs['D'] = np.sqrt((active_attrs['x']-hx)**2 + (active_attrs['y']-hy)**2)
                     highlight_list += active_attrs.sort_values('D').head(5)['Label'].tolist()
                 
-                # Top 5 Passive Items (for each visible layer)
+                # Top 5 Passive Items
                 for layer in passive_layer_data:
                     if not layer.empty and layer['Visible'].iloc[0]:
                         l_copy = layer.copy()
@@ -274,7 +295,7 @@ with tab1:
                 return base_color, 1.0
             if label in highlight_list:
                 return base_color, 1.0
-            return '#d3d3d3', 0.25 # Ghosted
+            return '#d3d3d3', 0.25
 
         # 1. BASE COLUMNS
         if show_base_cols:
@@ -289,7 +310,6 @@ with tab1:
                 marker=dict(size=10, color=c_list, opacity=o_list, line=dict(width=1, color='white')),
                 text=plot_b['Label'], hoverinfo='text', name='Base Columns'
             ))
-            # Labels
             for _, r in plot_b.iterrows():
                 c, o = get_color_opacity(r['Label'], '#1f77b4')
                 if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(color=c, size=11), arrowcolor=c)
@@ -336,8 +356,7 @@ with tab1:
             template="plotly_white", height=850,
             xaxis=dict(showgrid=False, showticklabels=False, zeroline=True),
             yaxis=dict(showgrid=False, showticklabels=False, zeroline=True),
-            yaxis_scaleanchor="x", yaxis_scaleratio=1,
-            dragmode='pan'
+            yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan'
         )
         
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True, 'displayModeBar': True})
@@ -393,9 +412,12 @@ with tab3:
         try:
             if raw_mri.name.endswith('.csv'): df_raw = pd.read_csv(raw_mri, header=None)
             else: df_raw = pd.read_excel(raw_mri, header=None)
+            
             metric_row_idx = -1
             for i, row in df_raw.iterrows():
-                if row.astype(str).str.contains("Weighted (000)", regex=False).any(): metric_row_idx = i; break
+                if row.astype(str).str.contains("Weighted (000)", regex=False).any():
+                    metric_row_idx = i; break
+            
             if metric_row_idx != -1:
                 brand_row = df_raw.iloc[metric_row_idx - 1]
                 metric_row = df_raw.iloc[metric_row_idx]
