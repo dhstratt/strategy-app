@@ -277,10 +277,17 @@ with tab1:
 # ==========================================
 with tab2:
     st.header("🧹 MRI Data Cleaner")
-    raw_mri = st.file_uploader("Upload Raw MRI CSV", type=["csv"])
+    st.markdown("Upload a raw MRI Crosstab (CSV or Excel) to clean it for the map.")
+    raw_mri = st.file_uploader("Upload Raw MRI", type=["csv", "xlsx"])
+    
     if raw_mri:
         try:
-            df_raw = pd.read_csv(raw_mri, header=None)
+            # Handle CSV or Excel
+            if raw_mri.name.endswith('.csv'):
+                df_raw = pd.read_csv(raw_mri, header=None)
+            else:
+                df_raw = pd.read_excel(raw_mri, header=None)
+                
             metric_row_idx = -1
             for i, row in df_raw.iterrows():
                 if row.astype(str).str.contains("Weighted (000)", regex=False).any():
@@ -301,6 +308,10 @@ with tab2:
                 df_clean.columns = headers
                 df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
                 df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
+                
+                # FINAL FILTER FOR ROWS IN CLEANER
+                df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+                
                 st.success("Cleaned!")
                 st.download_button("Download CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
             else: st.error("Could not find 'Weighted (000)' row.")
