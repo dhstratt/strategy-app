@@ -6,7 +6,13 @@ import plotly.express as px
 import collections
 import io
 import pickle
-from sklearn.cluster import KMeans
+
+# --- SAFE IMPORT FOR CLUSTERING ---
+try:
+    from sklearn.cluster import KMeans
+    HAS_SKLEARN = True
+except ImportError:
+    HAS_SKLEARN = False
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="The Consumer Landscape")
@@ -128,7 +134,10 @@ with tab1:
         enable_clustering = st.checkbox("Enable Territory Discovery", False)
         num_clusters = 4
         if enable_clustering:
-            num_clusters = st.slider("Number of Territories", 2, 8, 4)
+            if HAS_SKLEARN:
+                num_clusters = st.slider("Number of Territories", 2, 8, 4)
+            else:
+                st.error("⚠️ Library 'scikit-learn' missing. Please add to requirements.txt")
         
         st.divider()
 
@@ -240,7 +249,7 @@ with tab1:
         passive_layer_data = st.session_state.passive_data
         
         # --- CLUSTERING LOGIC (ON THE FLY) ---
-        if enable_clustering:
+        if enable_clustering and HAS_SKLEARN:
             try:
                 kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
                 df_attrs['Cluster'] = kmeans.fit_predict(df_attrs[['x', 'y']])
@@ -326,7 +335,7 @@ with tab1:
         if show_base_rows:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             
-            if enable_clustering:
+            if enable_clustering and HAS_SKLEARN:
                 # Group by Cluster for Legend
                 clusters = sorted(plot_a['Cluster'].unique())
                 # Safe Color Palette for Clusters
@@ -463,14 +472,19 @@ with tab3:
                 
                 df_clean = data_rows.iloc[:, cols]; df_clean.columns = headers
                 df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
+                
+                # --- JUNK REMOVAL ---
                 data_cols = df_clean.columns[1:]
                 for c in data_cols:
                     df_clean[c] = pd.to_numeric(df_clean[c].astype(str).str.replace(',', ''), errors='coerce')
                 
-                # --- JUNK REMOVAL ---
-                df_clean = df_clean.dropna(subset=data_cols, how='all') # Drop if ALL numbers are NaN
-                df_clean = df_clean[df_clean[data_cols].sum(axis=1) > 0] # Drop if SUM is 0
+                # Drop rows where ALL data columns are NaN
+                df_clean = df_clean.dropna(subset=data_cols, how='all')
                 
+                # Drop rows where SUM of data is 0 (or NaN treated as 0)
+                df_clean = df_clean[df_clean[data_cols].fillna(0).sum(axis=1) > 0]
+
+                # Filter Tags
                 df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
                 df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
                 
