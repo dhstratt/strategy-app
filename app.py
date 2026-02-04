@@ -10,7 +10,6 @@ st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
 # --- MAIN APP ---
 st.title("🧠 The Strategy Engine")
 st.markdown("Upload your **Cleaned** CSV (Attributes in Col A, Brands in Cols B+).")
-st.caption("💡 **Pro Tip:** The map calculates positions using the **ENTIRE** dataset. The sliders just zoom in on the important parts.")
 
 # 1. UPLOAD
 uploaded_file = st.sidebar.file_uploader("Upload Clean CSV/Excel", type=["csv", "xlsx"])
@@ -29,8 +28,12 @@ st.sidebar.success("Data Loaded!")
 
 # 3. SELECT COLUMNS
 label_col = df.columns[0] 
-all_brands = df.columns[1:].tolist()
-data_cols = st.sidebar.multiselect("Select Brands to Map", all_brands, default=all_brands)
+all_cols = df.columns[1:].tolist()
+
+# --- SMART CLEANER: AUTO-REMOVE "TOTAL" COLUMNS ---
+# We filter out columns that look like totals/bases to prevent skewing
+valid_cols = [c for c in all_cols if "total" not in str(c).lower() and "base" not in str(c).lower()]
+data_cols = st.sidebar.multiselect("Select Brands to Map", valid_cols, default=valid_cols)
 
 if not data_cols:
     st.warning("Please select at least one brand.")
@@ -45,15 +48,37 @@ for col in cleaned_df.columns:
         cleaned_df[col] = cleaned_df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
 
 cleaned_df = cleaned_df.fillna(0)
+
+# --- SMART CLEANER: AUTO-REMOVE "TOTAL" ROWS ---
+# Drop rows that contain "Total", "Universe", "Base" in the label
+cleaned_df = cleaned_df[~cleaned_df.index.astype(str).str.contains("Total|Universe|Base|Sample|Unweighted", case=False, regex=True)]
+
+# Final cleanup of empty rows/cols
 cleaned_df = cleaned_df.loc[(cleaned_df != 0).any(axis=1)]
 cleaned_df = cleaned_df.loc[:, (cleaned_df != 0).any(axis=0)]
 
 if cleaned_df.empty:
-    st.error("Error: Data is empty after cleaning.")
+    st.error("Error: Data is empty after cleaning. Check your file.")
     st.stop()
 
-# 5. THE MATH (SVD) - CALCULATED ON TOTAL DATASET
+# --- MATH MODE SELECTOR ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🧮 Math Engine")
+math_mode = st.sidebar.radio("Analysis Mode:", 
+                           ["Balanced (Strategic)", "Standard (Market Share)"], 
+                           index=0,
+                           help="Balanced ignores brand size to show pure positioning. Standard lets big brands dominate.")
+
+# 5. THE MATH (SVD)
 N = cleaned_df.values
+
+# MODE LOGIC
+if math_mode == "Balanced (Strategic)":
+    # Row Profiles: Divide each number by its Brand Total. 
+    # This makes small brands equal weight to big brands.
+    N = N / N.sum(axis=0, keepdims=True)
+
+# Correspondence Analysis Math
 P = N / N.sum()
 r = P.sum(axis=1)
 c = P.sum(axis=0)
@@ -86,7 +111,7 @@ def suggest_theme(df, direction, n=4):
     
     top_1 = subset.iloc[0]
     all_text = " ".join(subset.astype(str)).lower()
-    stop_words = ['i', 'the', 'and', 'to', 'of', 'a', 'in', 'is', 'it', 'my', 'for', 'on', 'with', 'often', 'prefer', 'like', 'typically', 'look', 'buy', 'make', 'feel', 'more', 'less', 'most']
+    stop_words = ['i', 'the', 'and', 'to', 'of', 'a', 'in', 'is', 'it', 'my', 'for', 'on', 'with', 'often', 'prefer', 'like', 'typically', 'look', 'buy', 'make', 'feel', 'more', 'less', 'most', 'brand']
     words = [w.strip(".,()&") for w in all_text.split() if w.strip(".,()&") not in stop_words and len(w) > 2]
     
     if words:
@@ -94,7 +119,7 @@ def suggest_theme(df, direction, n=4):
         if most_common[1] > 1:
             return most_common[0].capitalize() 
             
-    return (top_1[:30] + '..') if len(top_1) > 30 else top_1
+    return (top_1[:25] + '..') if len(top_1) > 25 else top_1
 
 sugg_right = suggest_theme(df_attrs, 'Right')
 sugg_left = suggest_theme(df_attrs, 'Left')
@@ -117,12 +142,11 @@ total_attrs = len(df_attrs)
 n_attrs_show = st.sidebar.slider("Attribute Density", 5, total_attrs, 15)
 show_attr_labels = st.sidebar.checkbox("Show Attribute Labels", value=True)
 
-# Focus Mode
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔦 Focus Mode")
 focus_brand = st.sidebar.selectbox("Highlight a specific brand:", ["None"] + df_brands['Label'].tolist())
 
-# --- FILTERING LOGIC (Does not affect Math, only View) ---
+# --- FILTERING LOGIC ---
 top_brands = df_brands.sort_values('Distinctiveness', ascending=False).head(n_brands_show)
 top_attrs = df_attrs.sort_values('Distinctiveness', ascending=False).head(n_attrs_show)
 inertia = s**2
@@ -131,8 +155,7 @@ accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
 st.divider()
 col1, col2 = st.columns([1, 3])
 col1.metric("Map Accuracy", f"{accuracy:.1f}%")
-# Explicit Confirmation Message
-col2.info(f"**Data Monitor:** Analysis calculated on all **{total_brands}** brands and **{total_attrs}** attributes. Currently displaying the top **{n_brands_show}** brands.")
+col2.info(f"**Data Monitor:** Analysis on **{total_brands}** brands & **{total_attrs}** attributes. Displaying top **{n_brands_show}**.")
 
 # --- INTERACTIVE MAP ---
 fig = go.Figure()
@@ -226,34 +249,4 @@ fig.add_shape(type="rect", x0=0, y0=0, x1=df_brands['x'].max()*1.2, y1=df_brands
 fig.add_shape(type="rect", x0=df_brands['x'].min()*1.2, y0=df_brands['y'].min()*1.2, x1=0, y1=0, 
               fillcolor="blue", opacity=0.03, layer="below", line_width=0)
 
-st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
-
-# --- AUTOMATED STORY GENERATOR (Uses Your Labels) ---
-st.subheader("📝 Strategic Interpretation")
-
-def get_quadrant_winner(df, q_x, q_y):
-    quad = df[(df['x'] * q_x > 0) & (df['y'] * q_y > 0)]
-    # We check if the winner is in the 'visible' list to avoid confusing the user
-    # but the calculation finds the true winner of the quadrant
-    if not quad.empty:
-        return quad.sort_values('Distinctiveness', ascending=False).iloc[0]['Label']
-    return "Niche Players"
-
-winner_ne = get_quadrant_winner(df_brands, 1, 1)   
-winner_nw = get_quadrant_winner(df_brands, -1, 1)  
-winner_se = get_quadrant_winner(df_brands, 1, -1)  
-winner_sw = get_quadrant_winner(df_brands, -1, -1) 
-
-explanation = f"""
-**1. The Primary Tension (Horizontal):** The market is primarily divided by **{theme_left}** vs. **{theme_right}**. This is the single biggest differentiator between brands in this category.
-
-**2. The Secondary Tension (Vertical):** There is a secondary split driven by **{theme_top}** vs. **{theme_bottom}**.
-
-**3. The Strategic Battlegrounds:**
-* **The "High {theme_right} / High {theme_top}" Territory:** Currently dominated by **{winner_ne}**.
-* **The "High {theme_left} / High {theme_top}" Territory:** Currently dominated by **{winner_nw}**.
-* **The "High {theme_right} / Low {theme_top}" Territory:** Currently dominated by **{winner_se}**.
-* **The "High {theme_left} / Low {theme_top}" Territory:** Currently dominated by **{winner_sw}**.
-"""
-
-st.markdown(explanation)
+st.plotly_chart(fig, use_container_width=True
