@@ -9,6 +9,26 @@ import pickle
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
 
+# --- CUSTOM CSS: LOAD GOTHAM ROUNDED ALTERNATIVE (NUNITO) ---
+st.markdown("""
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');
+        
+        html, body, [class*="css"] {
+            font-family: 'Nunito', sans-serif;
+        }
+        
+        h1, h2, h3 {
+            font-family: 'Nunito', sans-serif;
+            font-weight: 800;
+        }
+        
+        .stMetric {
+            font-family: 'Nunito', sans-serif;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
 # --- SESSION STATE ---
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = False
@@ -41,6 +61,7 @@ def load_file(file):
 # ==========================================
 with tab1:
     st.title("🧠 The Strategy Engine")
+    
     col_nav, col_main = st.columns([1, 4])
     
     # --- SIDEBAR ---
@@ -251,29 +272,38 @@ with tab1:
         anns = []
         for _, r in plot_brands.iterrows():
             c, o = get_style(r['Label'], True)
-            if o > 0.3: anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(size=11, color=c, family="Arial Black"), bgcolor="rgba(255,255,255,0.7)", arrowcolor=c))
+            if o > 0.3: anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(size=11, color=c, family="Nunito"), bgcolor="rgba(255,255,255,0.7)", arrowcolor=c))
         
         for _, r in plot_attrs.iterrows():
             c, o = get_style(r['Label'], False)
-            if o > 0.3: anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=c), bgcolor="rgba(255,255,255,0.5)", arrowcolor=c))
+            if o > 0.3: anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=c, family="Nunito"), bgcolor="rgba(255,255,255,0.5)", arrowcolor=c))
 
         for i, layer in enumerate(sel_passive_data):
             if focus_brand == "None":
                 pc = pass_colors[i % len(pass_colors)]
                 for _, r in layer.iterrows():
-                    anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=pc), bgcolor="rgba(255,255,255,0.5)", arrowcolor=pc))
+                    anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=pc, family="Nunito"), bgcolor="rgba(255,255,255,0.5)", arrowcolor=pc))
 
-        fig.update_layout(annotations=anns, title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center'}, template="plotly_white", height=850, xaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan')
+        fig.update_layout(
+            annotations=anns, 
+            title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center', 'font': {'family': 'Nunito', 'size': 20}},
+            font=dict(family="Nunito, sans-serif"),
+            template="plotly_white", height=850, 
+            xaxis=dict(showgrid=False, showticklabels=False, zeroline=True), 
+            yaxis=dict(showgrid=False, showticklabels=False, zeroline=True), 
+            yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan'
+        )
         fig.add_shape(type="rect", x0=0, y0=0, x1=10, y1=10, fillcolor="blue", opacity=0.03, layer="below", line_width=0)
         fig.add_shape(type="rect", x0=-10, y0=-10, x1=0, y1=0, fillcolor="blue", opacity=0.03, layer="below", line_width=0)
         
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True, 'displayModeBar': True})
 
 # ==========================================
-# TAB 2: AI CHAT
+# TAB 2: AI STRATEGY CHAT
 # ==========================================
 with tab2:
     st.header("💬 AI Strategy Chat")
+    
     if not st.session_state.processed_data:
         st.warning("👈 Please upload and process data in 'The Strategy Engine' tab first.")
     else:
@@ -282,49 +312,52 @@ with tab2:
             df_b = st.session_state.df_brands
             df_a = st.session_state.df_attrs
             
-            if "theme" in query or "dimension" in query:
+            if "theme" in query or "dimension" in query or "axis" in query:
                 x_max = df_a.loc[df_a['x'].idxmax()]['Label']
                 x_min = df_a.loc[df_a['x'].idxmin()]['Label']
                 y_max = df_a.loc[df_a['y'].idxmax()]['Label']
                 y_min = df_a.loc[df_a['y'].idxmin()]['Label']
-                return f"**Map Themes:**\n\n* **Horizontal:** {x_min} ↔ {x_max}\n* **Vertical:** {y_min} ↔ {y_max}"
+                return f"""**Map Themes:**\n\n* **Horizontal Tension:** Runs from **"{x_min}"** to **"{x_max}"**.\n* **Vertical Tension:** Runs from **"{y_min}"** to **"{y_max}"**."""
 
-            if "white space" in query or "opportunity" in query:
-                df_a['MinDist'] = df_a.apply(lambda r: np.min(np.sqrt((df_b['x'] - r['x'])**2 + (df_b['y'] - r['y'])**2)), axis=1)
-                ws = df_a.sort_values('MinDist', ascending=False).head(3)
-                txt = "\n".join([f"* {r['Label']}" for _, r in ws.iterrows()])
-                return f"**White Space Opportunities:**\n\n{txt}"
+            if "white space" in query or "gap" in query or "opportunity" in query:
+                df_a['MinBrandDist'] = df_a.apply(lambda r: np.min(np.sqrt((df_b['x'] - r['x'])**2 + (df_b['y'] - r['y'])**2)), axis=1)
+                white_space = df_a.sort_values('MinBrandDist', ascending=False).head(3)
+                ws_text = "\n".join([f"* **{row['Label']}** (Distance: {row['MinBrandDist']:.2f})" for i, row in white_space.iterrows()])
+                return f"**Consumer White Space:**\n\nThe following attributes are furthest from any brand:\n\n{ws_text}"
 
-            for b in df_b['Label']:
-                if b.lower() in query:
-                    br = df_b[df_b['Label'] == b].iloc[0]
-                    df_a['D'] = np.sqrt((df_a['x'] - br['x'])**2 + (df_a['y'] - br['y'])**2)
-                    df_a['OD'] = np.sqrt((df_a['x'] - (-br['x']))**2 + (df_a['y'] - (-br['y']))**2)
-                    df_b['D'] = np.sqrt((df_b['x'] - br['x'])**2 + (df_b['y'] - br['y'])**2)
-                    
-                    s = df_a.sort_values('D').head(3)['Label'].tolist()
-                    w = df_a.sort_values('OD').head(3)['Label'].tolist()
-                    c = df_b[df_b['Label']!=b].sort_values('D').head(3)['Label'].tolist()
-                    return f"**Audit: {b}**\n\n✅ **Strengths:** {', '.join(s)}\n❌ **Weaknesses:** {', '.join(w)}\n⚔️ **Competitors:** {', '.join(c)}"
-            
-            return "Try asking: 'What are the themes?', 'Where is the white space?', or 'Audit [Brand]'."
+            for brand in df_b['Label']:
+                if brand.lower() in query:
+                    brand_row = df_b[df_b['Label'] == brand].iloc[0]
+                    bx, by = brand_row['x'], brand_row['y']
+                    df_a['Dist'] = np.sqrt((df_a['x'] - bx)**2 + (df_a['y'] - by)**2)
+                    strengths = df_a.sort_values('Dist').head(3)['Label'].tolist()
+                    df_a['OppositeDist'] = np.sqrt((df_a['x'] - (-bx))**2 + (df_a['y'] - (-by))**2)
+                    weaknesses = df_a.sort_values('OppositeDist').head(3)['Label'].tolist()
+                    df_b['Dist'] = np.sqrt((df_b['x'] - bx)**2 + (df_b['y'] - by)**2)
+                    competitors = df_b[df_b['Label'] != brand].sort_values('Dist').head(3)['Label'].tolist()
+                    return f"""**Strategic Audit for {brand}:**\n\n**✅ Strengths (Owns These):**\n* {strengths[0]}\n* {strengths[1]}\n* {strengths[2]}\n\n**❌ Weaknesses (Lacks These):**\n* {weaknesses[0]}\n* {weaknesses[1]}\n* {weaknesses[2]}\n\n**⚔️ Primary Competitors:**\n* {', '.join(competitors)}"""
 
-        for m in st.session_state.messages:
-            with st.chat_message(m["role"]): st.markdown(m["content"])
-        
-        if p := st.chat_input("Ask a question..."):
-            st.session_state.messages.append({"role": "user", "content": p})
-            with st.chat_message("user"): st.markdown(p)
-            r = analyze_query(p)
-            with st.chat_message("assistant"): st.markdown(r)
-            st.session_state.messages.append({"role": "assistant", "content": r})
+            return "I can analyze **Themes**, **White Space**, or **Audit [Brand]**."
+
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        if prompt := st.chat_input("Ask a strategic question..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            response = analyze_query(prompt)
+            with st.chat_message("assistant"):
+                st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
 
 # ==========================================
-# TAB 3: CLEANER
+# TAB 3: DATA CLEANER
 # ==========================================
 with tab3:
     st.header("🧹 MRI Data Cleaner")
-    raw_mri = st.file_uploader("Upload Raw MRI", type=["csv", "xlsx", "xls"])
+    raw_mri = st.file_uploader("Upload Raw MRI (CSV/Excel)", type=["csv", "xlsx", "xls"])
     if raw_mri:
         try:
             if raw_mri.name.endswith('.csv'): df_raw = pd.read_csv(raw_mri, header=None)
