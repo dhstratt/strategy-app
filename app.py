@@ -31,14 +31,25 @@ with tab1:
         else: return pd.read_excel(file)
 
     def clean_df(df):
+        # 1. Set Index
         label_col = df.columns[0]
         df = df.set_index(label_col)
+        
+        # 2. Clean Numbers
         for col in df.columns:
             if df[col].dtype == 'object':
                 df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
         df = df.fillna(0)
-        df = df[~df.index.astype(str).str.contains("Total|Universe|Base|Sample", case=False, regex=True)]
-        valid_cols = [c for c in df.columns if "total" not in str(c).lower() and "base" not in str(c).lower()]
+        
+        # 3. THE ASSASSIN (Rows): Remove 'Study Universe'
+        df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+        
+        # 4. THE ASSASSIN (Columns): Remove 'Study Universe'
+        valid_cols = [c for c in df.columns if 
+                      "study universe" not in str(c).lower() and 
+                      "total" not in str(c).lower() and 
+                      "base" not in str(c).lower()]
+        
         return df[valid_cols]
 
     if uploaded_file is not None:
@@ -151,49 +162,33 @@ with tab1:
             hero_related_attrs = []
             
             if focus_brand != "None":
-                # Find Hero Position
                 hero_row = df_brands[df_brands['Label'] == focus_brand]
                 if not hero_row.empty:
                     hero_x, hero_y = hero_row.iloc[0]['x'], hero_row.iloc[0]['y']
-                    
-                    # Calculate Distances for Core Attributes
                     plot_attrs = plot_attrs.copy()
                     plot_attrs['DistToHero'] = np.sqrt((plot_attrs['x'] - hero_x)**2 + (plot_attrs['y'] - hero_y)**2)
-                    
-                    # Identify Top 5 Related Attributes
                     hero_related_attrs = plot_attrs.sort_values('DistToHero').head(5)['Label'].tolist()
 
             # --- PLOTTING ---
             fig = go.Figure()
 
-            # COLORS & OPACITY LOGIC
             def get_style(label, is_brand=False):
-                # Default Colors
                 color = '#1f77b4' if is_brand else '#d62728'
                 opacity = 1.0 if is_brand else 0.7
-                
-                # If Spotlight is Active
                 if focus_brand != "None":
                     if is_brand:
-                        if label == focus_brand:
-                            return color, 1.0 # Hero stays bright
-                        else:
-                            return '#d3d3d3', 0.2 # Others fade
+                        if label == focus_brand: return color, 1.0
+                        else: return '#d3d3d3', 0.2
                     else:
-                        if label in hero_related_attrs:
-                            return color, 1.0 # Related stays bright
-                        else:
-                            return '#d3d3d3', 0.2 # Others fade
+                        if label in hero_related_attrs: return color, 1.0
+                        else: return '#d3d3d3', 0.2
                 return color, opacity
 
             # 1. CORE BRANDS
-            # We apply styles row by row or using lists
-            b_colors = []
-            b_opacities = []
+            b_colors, b_opacities = [], []
             for _, row in plot_brands.iterrows():
                 c, o = get_style(row['Label'], is_brand=True)
-                b_colors.append(c)
-                b_opacities.append(o)
+                b_colors.append(c); b_opacities.append(o)
 
             fig.add_trace(go.Scatter(
                 x=plot_brands['x'], y=plot_brands['y'], mode='markers', name='Brands',
@@ -202,12 +197,10 @@ with tab1:
             ))
 
             # 2. CORE ATTRIBUTES
-            a_colors = []
-            a_opacities = []
+            a_colors, a_opacities = [], []
             for _, row in plot_attrs.iterrows():
                 c, o = get_style(row['Label'], is_brand=False)
-                a_colors.append(c)
-                a_opacities.append(o)
+                a_colors.append(c); a_opacities.append(o)
 
             fig.add_trace(go.Scatter(
                 x=plot_attrs['x'], y=plot_attrs['y'], mode='markers', name='Statements',
@@ -219,7 +212,6 @@ with tab1:
             pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
             for i, layer in enumerate(sel_passive_data):
                 base_c = pass_colors[i % len(pass_colors)]
-                # If spotlight on, dim passive layers unless they are the hero (unlikely for passive)
                 l_colors = [base_c if focus_brand == "None" else '#d3d3d3' for _ in range(len(layer))]
                 l_opacs = [0.9 if focus_brand == "None" else 0.2 for _ in range(len(layer))]
                 
@@ -229,13 +221,10 @@ with tab1:
                     hoverinfo='text', hovertext=layer['Label']
                 ))
 
-            # 4. ANNOTATIONS (Labels)
+            # 4. ANNOTATIONS
             annotations = []
-            
-            # Brands
             for i, row in plot_brands.iterrows():
                 c, o = get_style(row['Label'], is_brand=True)
-                # Only label if opaque enough (visible)
                 if o > 0.3:
                     annotations.append(dict(
                         x=row['x'], y=row['y'], text=row['Label'],
@@ -244,7 +233,6 @@ with tab1:
                         bgcolor="rgba(255,255,255,0.7)"
                     ))
 
-            # Attributes
             for i, row in plot_attrs.iterrows():
                 c, o = get_style(row['Label'], is_brand=False)
                 if o > 0.3:
@@ -255,10 +243,9 @@ with tab1:
                         bgcolor="rgba(255,255,255,0.5)"
                     ))
             
-            # Passive
             for i, layer in enumerate(sel_passive_data):
                 base_c = pass_colors[i % len(pass_colors)]
-                if focus_brand == "None": # Only show passive labels if no spotlight
+                if focus_brand == "None":
                     for _, row in layer.iterrows():
                         annotations.append(dict(
                             x=row['x'], y=row['y'], text=row['Label'],
@@ -307,6 +294,7 @@ with tab2:
                 for c in range(1, len(metric_row)):
                     if "Weighted" in str(metric_row[c]):
                         brand = str(brand_row[c-1])
+                        # EXPLICITLY BLOCK STUDY UNIVERSE
                         if "Study Universe" not in brand and "Total" not in brand and brand != 'nan':
                             cols.append(c); headers.append(brand)
                 df_clean = data_rows.iloc[:, cols]
