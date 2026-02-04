@@ -9,12 +9,11 @@ st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
 # --- MAIN APP ---
 st.title("🧠 The Strategy Engine")
 st.markdown("Upload your **Cleaned** CSV (Attributes in Col A, Brands in Cols B+).")
-st.caption("💡 **Pro Tip:** You can CLICK and DRAG labels on the map to organize them! (Snapshot before refreshing)")
+st.caption("💡 **Pro Tip:** Use the sliders to filter out 'boring' (central) data. Drag labels to refine.")
 
 # 1. UPLOAD
 uploaded_file = st.sidebar.file_uploader("Upload Clean CSV/Excel", type=["csv", "xlsx"])
 
-# SAFETY CHECK: Stop here if no file is uploaded (Prevents indentation errors)
 if uploaded_file is None:
     st.info("👈 Waiting for file upload...")
     st.stop()
@@ -32,7 +31,6 @@ label_col = df.columns[0]
 all_brands = df.columns[1:].tolist()
 data_cols = st.sidebar.multiselect("Select Brands to Map", all_brands, default=all_brands)
 
-# SAFETY CHECK: Stop if no brands selected
 if not data_cols:
     st.warning("Please select at least one brand.")
     st.stop()
@@ -73,26 +71,35 @@ df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
 df_brands['Label'] = cleaned_df.columns
 df_brands['Type'] = 'Brand'
 df_brands['Size'] = 12  
+# We rename 'Importance' to 'Distinctiveness' for clarity in the UI
+df_brands['Distinctiveness'] = np.sqrt(df_brands['x']**2 + df_brands['y']**2)
 
 # Attributes
 df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x', 'y'])
 df_attrs['Label'] = cleaned_df.index
 df_attrs['Type'] = 'Attribute'
 df_attrs['Size'] = 6   
-
-# Strategic Importance
-df_attrs['Importance'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
+df_attrs['Distinctiveness'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
 
 # --- UX CONTROLS ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎨 Design Controls")
 
+# Brand Slider
+total_brands = len(df_brands)
+n_brands_show = st.sidebar.slider("Brand Density (Most Distinct First)", 
+                                min_value=2, max_value=total_brands, value=total_brands)
+
+# Attribute Slider
 total_attrs = len(df_attrs)
-n_show = st.sidebar.slider("Attribute Density", min_value=5, max_value=total_attrs, value=15)
+n_attrs_show = st.sidebar.slider("Attribute Density (Most Distinct First)", 
+                               min_value=5, max_value=total_attrs, value=15)
+
 show_attr_labels = st.sidebar.checkbox("Show Attribute Labels", value=True)
 
-# Filter Attributes
-top_attrs = df_attrs.sort_values('Importance', ascending=False).head(n_show)
+# Filter DataFrames
+top_brands = df_brands.sort_values('Distinctiveness', ascending=False).head(n_brands_show)
+top_attrs = df_attrs.sort_values('Distinctiveness', ascending=False).head(n_attrs_show)
 
 # Accuracy
 inertia = s**2
@@ -101,19 +108,21 @@ accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
 st.divider()
 col1, col2 = st.columns([1, 3])
 col1.metric("Map Accuracy", f"{accuracy:.1f}%")
-col2.caption(f"Showing top {n_show} attributes. **Drag labels to organize.**")
+col2.caption(f"Showing **{n_brands_show}** brands and **{n_attrs_show}** attributes based on distinctiveness.")
 
 # --- INTERACTIVE MAP ---
 fig = go.Figure()
 
 # Add Brands (Dots)
 fig.add_trace(go.Scatter(
-    x=df_brands['x'], y=df_brands['y'],
+    x=top_brands['x'], y=top_brands['y'],
     mode='markers', 
     name='Brands',
     marker=dict(size=12, color='#1f77b4', line=dict(width=1, color='white')),
-    hoverinfo='text',
-    hovertext=df_brands['Label']
+    # UPDATED HOVER: Shows Distinctiveness Score
+    hovertemplate="<b>%{text}</b><br>Distinctiveness: %{customdata:.2f}<extra></extra>",
+    text=top_brands['Label'],
+    customdata=top_brands['Distinctiveness']
 ))
 
 # Add Attributes (Dots)
@@ -122,15 +131,17 @@ fig.add_trace(go.Scatter(
     mode='markers',
     name='Attributes',
     marker=dict(size=7, color='#d62728', opacity=0.7),
-    hoverinfo='text',
-    hovertext=top_attrs['Label']
+    # UPDATED HOVER: Shows Distinctiveness Score
+    hovertemplate="<b>%{text}</b><br>Distinctiveness: %{customdata:.2f}<extra></extra>",
+    text=top_attrs['Label'],
+    customdata=top_attrs['Distinctiveness']
 ))
 
 # Add Draggable Annotations
 annotations = []
 
 # Brand Labels 
-for i, row in df_brands.iterrows():
+for i, row in top_brands.iterrows():
     annotations.append(dict(
         x=row['x'], y=row['y'],
         text=row['Label'],
@@ -167,5 +178,4 @@ fig.update_layout(
     dragmode='pan' 
 )
 
-# Enable dragging
 st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
