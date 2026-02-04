@@ -87,7 +87,9 @@ with tab1:
             proj_name = st.text_input("Project Name", "My_Map")
             if st.session_state.processed_data:
                 project_data = {'df_brands': st.session_state.df_brands, 'df_attrs': st.session_state.df_attrs, 'passive_data': st.session_state.passive_data, 'accuracy': st.session_state.accuracy}
-                buffer = io.BytesIO(); pickle.dump(project_data, buffer); buffer.seek(0)
+                buffer = io.BytesIO()
+                pickle.dump(project_data, buffer)
+                buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
 
         uploaded_file = st.file_uploader("Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
@@ -130,19 +132,27 @@ with tab1:
             df_math = df_math.loc[:, (df_math != 0).any(axis=0)]
             
             if not df_math.empty:
-                N = df_math.values; P = N / N.sum(); r = P.sum(axis=1); c = P.sum(axis=0)
-                E = np.outer(r, c); E[E < 1e-9] = 1e-9; R = (P - E) / np.sqrt(E)
+                N = df_math.values
+                P = N / N.sum()
+                r = P.sum(axis=1)
+                c = P.sum(axis=0)
+                E = np.outer(r, c)
+                E[E < 1e-9] = 1e-9
+                R = (P - E) / np.sqrt(E)
                 U, s, Vh = np.linalg.svd(R, full_matrices=False)
-                inertia = s**2; map_accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
+                inertia = s**2
+                map_accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
                 row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
                 col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
                 
                 df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
-                df_brands['Label'] = df_math.columns; df_brands['Type'] = 'Column'
+                df_brands['Label'] = df_math.columns
+                df_brands['Type'] = 'Column'
                 df_brands['Distinctiveness'] = np.sqrt(df_brands['x']**2 + df_brands['y']**2)
                 
                 df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x', 'y'])
-                df_attrs['Label'] = df_math.index; df_attrs['Type'] = 'Row'
+                df_attrs['Label'] = df_math.index
+                df_attrs['Type'] = 'Row'
                 df_attrs['Distinctiveness'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
 
                 st.session_state.processed_data = True
@@ -153,27 +163,36 @@ with tab1:
                 passive_layer_data = []
                 for cfg in passive_configs:
                     try:
-                        p_df = load_file(cfg["file"]); p_clean = clean_df(p_df)
+                        p_df = load_file(cfg["file"])
+                        p_clean = clean_df(p_df)
                         common_brands = list(set(p_clean.columns) & set(df_math.columns))
                         common_attrs = list(set(p_clean.index) & set(df_math.index))
                         is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else len(common_brands) > len(common_attrs)
                         
                         if is_rows:
-                            p_clean = p_clean.loc[[r for r in p_clean.index if r not in df_math.index]]
+                            unique_rows = [r for r in p_clean.index if r not in df_math.index]
+                            p_clean = p_clean.loc[unique_rows]
                             if not p_clean.empty and len(common_brands) > 0:
                                 p_prof = p_clean[common_brands].div(p_clean[common_brands].sum(axis=1).replace(0,1), axis=0)
                                 proj = p_prof.values @ col_coords[:, :2] / s[:2]
                                 res = pd.DataFrame(proj, columns=['x', 'y'])
-                                res['Label'] = p_clean.index; res['Shape'] = 'star'; res['LayerName'] = cfg["name"]; res['Visible'] = cfg["show"]
+                                res['Label'] = p_clean.index
+                                res['Shape'] = 'star'
+                                res['LayerName'] = cfg["name"]
+                                res['Visible'] = cfg["show"]
                                 res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                                 passive_layer_data.append(res)
                         else:
-                            p_clean = p_clean[[c for c in p_clean.columns if c not in df_math.columns]]
+                            unique_cols = [c for c in p_clean.columns if c not in df_math.columns]
+                            p_clean = p_clean[unique_cols]
                             if not p_clean.empty and len(common_attrs) > 0:
                                 p_prof = p_clean.reindex(df_math.index).div(p_clean.reindex(df_math.index).sum(axis=0).replace(0,1), axis=1)
                                 proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
                                 res = pd.DataFrame(proj, columns=['x', 'y'])
-                                res['Label'] = p_clean.columns; res['Shape'] = 'diamond'; res['LayerName'] = cfg["name"]; res['Visible'] = cfg["show"]
+                                res['Label'] = p_clean.columns
+                                res['Shape'] = 'diamond'
+                                res['LayerName'] = cfg["name"]
+                                res['Visible'] = cfg["show"]
                                 res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                                 passive_layer_data.append(res)
                     except: pass
@@ -182,7 +201,8 @@ with tab1:
 
     # --- RENDER ---
     if st.session_state.processed_data:
-        df_brands = st.session_state.df_brands; df_attrs = st.session_state.df_attrs
+        df_brands = st.session_state.df_brands
+        df_attrs = st.session_state.df_attrs
         passive_layer_data = st.session_state.passive_data
         cluster_colors = px.colors.qualitative.Bold
         
@@ -206,7 +226,6 @@ with tab1:
 
         # 2. Filters UI
         with placeholder_filters.container():
-            # STABILITY METRIC (RESTORED)
             st.metric("Map Stability Score", f"{st.session_state.accuracy:.1f}%")
             if st.session_state.accuracy < 60:
                 st.warning("⚠️ **Low Stability:** Results may be visually distorted due to data variance.")
@@ -214,16 +233,26 @@ with tab1:
 
             all_b_labels = sorted(df_brands['Label'].tolist())
             focus_brand = st.selectbox("Highlight Column:", ["None"] + all_b_labels)
+            
             with st.expander("Filter Base Map"):
-                sel_brands = st.multiselect("Select Columns:", all_b_labels, default=all_b_labels) if not st.checkbox("All Columns", True) else all_b_labels
+                if not st.checkbox("All Columns", True):
+                    sel_brands = st.multiselect("Select Columns:", all_b_labels, default=all_b_labels)
+                else:
+                    sel_brands = all_b_labels
+                
                 all_a_labels = sorted(df_attrs['Label'].tolist())
-                sel_attrs = st.multiselect("Select Rows:", all_a_labels, default=all_a_labels[:10]) if not st.checkbox("All Rows", True) else all_a_labels
+                if not st.checkbox("All Rows", True):
+                    sel_attrs = st.multiselect("Select Rows:", all_a_labels, default=all_a_labels[:10])
+                else:
+                    sel_attrs = all_a_labels
+            
             for i, layer in enumerate(passive_layer_data):
                 if not layer.empty and layer['Visible'].iloc[0]:
                     with st.expander(f"Filter {layer['LayerName'].iloc[0]}"):
                         l_labels = sorted(layer['Label'].tolist())
                         if not st.checkbox("All", True, key=f"f_all_{i}"):
-                            passive_layer_data[i] = layer[layer['Label'].isin(st.multiselect("Select:", l_labels, default=l_labels, key=f"f_sel_{i}"))]
+                            sel_l = st.multiselect("Select:", l_labels, default=l_labels, key=f"f_sel_{i}")
+                            passive_layer_data[i] = layer[layer['Label'].isin(sel_l)]
 
         # 3. Plotting
         fig = go.Figure()
@@ -236,7 +265,8 @@ with tab1:
             highlight_list += active_attrs.sort_values('D').head(5)['Label'].tolist()
             for layer in passive_layer_data:
                 if not layer.empty and layer['Visible'].iloc[0]:
-                    l_copy = layer.copy(); l_copy['D'] = np.sqrt((l_copy['x']-hx)**2 + (l_copy['y']-hy)**2)
+                    l_copy = layer.copy()
+                    l_copy['D'] = np.sqrt((l_copy['x']-hx)**2 + (l_copy['y']-hy)**2)
                     highlight_list += l_copy.sort_values('D').head(5)['Label'].tolist()
 
         def get_so(lbl, base_c):
@@ -246,7 +276,8 @@ with tab1:
 
         if show_base_cols:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
-            c_l, o_l = zip(*[get_so(r['Label'], '#1f77b4') for _, r in plot_b.iterrows()])
+            res = [get_so(r['Label'], '#1f77b4') for _, r in plot_b.iterrows()]
+            c_l, o_l = [r[0] for r in res], [r[1] for r in res]
             fig.add_trace(go.Scatter(x=plot_b['x'], y=plot_b['y'], mode='markers', marker=dict(size=10, color=c_l, opacity=o_l, line=dict(width=1, color='white')), text=plot_b['Label'], hoverinfo='text', name='Columns'))
             for _, r in plot_b.iterrows():
                 c, o = get_so(r['Label'], '#1f77b4')
@@ -256,14 +287,17 @@ with tab1:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             if enable_clustering and HAS_SKLEARN:
                 for cid in sorted(plot_a['Cluster'].unique()):
-                    sub = plot_a[plot_a['Cluster'] == cid]; bc = cluster_colors[cid % len(cluster_colors)]
-                    c_l, o_l = zip(*[get_so(r['Label'], bc) for _, r in sub.iterrows()])
+                    sub = plot_a[plot_a['Cluster'] == cid]
+                    bc = cluster_colors[cid % len(cluster_colors)]
+                    res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
+                    c_l, o_l = [r[0] for r in res], [r[1] for r in res]
                     fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=7, color=c_l, opacity=o_l), text=sub['Label'], hoverinfo='text', name=f"Territory {cid+1}"))
                     for _, r in sub.iterrows():
                         c, o = get_so(r['Label'], bc)
                         if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
             else:
-                c_l, o_l = zip(*[get_so(r['Label'], '#d62728') for _, r in plot_a.iterrows()])
+                res = [get_so(r['Label'], '#d62728') for _, r in plot_a.iterrows()]
+                c_l, o_l = [r[0] for r in res], [r[1] for r in res]
                 fig.add_trace(go.Scatter(x=plot_a['x'], y=plot_a['y'], mode='markers', marker=dict(size=7, color=c_l, opacity=o_l), text=plot_a['Label'], hoverinfo='text', name='Base Rows'))
                 for _, r in plot_a.iterrows():
                     c, o = get_so(r['Label'], '#d62728')
@@ -273,15 +307,18 @@ with tab1:
             if not layer.empty and layer['Visible'].iloc[0]:
                 if enable_clustering and 'Cluster' in layer.columns:
                     for cid in sorted(layer['Cluster'].unique()):
-                        sub = layer[layer['Cluster'] == cid]; bc = cluster_colors[cid % len(cluster_colors)]
-                        c_l, o_l = zip(*[get_so(r['Label'], bc) for _, r in sub.iterrows()])
+                        sub = layer[layer['Cluster'] == cid]
+                        bc = cluster_colors[cid % len(cluster_colors)]
+                        res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
+                        c_l, o_l = [r[0] for r in res], [r[1] for r in res]
                         fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=9, symbol=sub['Shape'].iloc[0], color=c_l, opacity=o_l, line=dict(width=1, color='white')), text=sub['Label'], hoverinfo='text', name=f"{sub['LayerName'].iloc[0]} (T{cid+1})", showlegend=False))
                         for _, r in sub.iterrows():
                             c, o = get_so(r['Label'], bc)
                             if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
                 else:
                     bc = cluster_colors[i % len(cluster_colors)]
-                    c_l, o_l = zip(*[get_so(r['Label'], bc) for _, r in layer.iterrows()])
+                    res = [get_so(r['Label'], bc) for _, r in layer.iterrows()]
+                    c_l, o_l = [r[0] for r in res], [r[1] for r in res]
                     fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=c_l, opacity=o_l, line=dict(width=1, color='white')), text=layer['Label'], hoverinfo='text', name=layer['LayerName'].iloc[0]))
                     for _, r in layer.iterrows():
                         c, o = get_so(r['Label'], bc)
@@ -317,14 +354,22 @@ with tab2:
                 return f"**Themes:**\n* ↔️ **X-Axis:** {df_a.loc[df_a['x'].idxmin()]['Label']} to {df_a.loc[df_a['x'].idxmax()]['Label']}\n* ↕️ **Y-Axis:** {df_a.loc[df_a['y'].idxmin()]['Label']} to {df_a.loc[df_a['y'].idxmax()]['Label']}"
             for b in df_b['Label']:
                 if b.lower() in q:
-                    br = df_b[df_b['Label']==b].iloc[0]; df_a['D'] = np.sqrt((df_a['x']-br['x'])**2 + (df_a['y']-br['y'])**2)
+                    br = df_b[df_b['Label']==b].iloc[0]
+                    df_a['D'] = np.sqrt((df_a['x']-br['x'])**2 + (df_a['y']-br['y'])**2)
                     return f"**Audit: {b}**\n✅ **Strengths:** {', '.join(df_a.sort_values('D').head(3)['Label'].tolist())}"
             return "Ask about Themes or Columns."
+        
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
+        
         if p := st.chat_input("Ask..."):
-            st.session_state.messages.append({"role": "user", "content": p}); with st.chat_message("user"): st.markdown(p)
-            r = analyze_query(p); st.session_state.messages.append({"role": "assistant", "content": r}); with st.chat_message("assistant"): st.markdown(r)
+            st.session_state.messages.append({"role": "user", "content": p})
+            with st.chat_message("user"): 
+                st.markdown(p)
+            r = analyze_query(p)
+            st.session_state.messages.append({"role": "assistant", "content": r})
+            with st.chat_message("assistant"):
+                st.markdown(r)
 
 # ==========================================
 # TAB 3: CLEANER
@@ -336,19 +381,27 @@ with tab3:
         try:
             df_raw = pd.read_csv(raw_mri, header=None) if raw_mri.name.endswith('.csv') else pd.read_excel(raw_mri, header=None)
             metric_row_idx = next(i for i, row in df_raw.iterrows() if row.astype(str).str.contains("Weighted (000)", regex=False).any())
-            brand_row = df_raw.iloc[metric_row_idx - 1]; metric_row = df_raw.iloc[metric_row_idx]; data_rows = df_raw.iloc[metric_row_idx + 1:].copy()
+            brand_row = df_raw.iloc[metric_row_idx - 1]
+            metric_row = df_raw.iloc[metric_row_idx]
+            data_rows = df_raw.iloc[metric_row_idx + 1:].copy()
             cols, headers = [0], ['Attitude']
             for c in range(1, len(metric_row)):
                 if "Weighted" in str(metric_row[c]):
                     brand = str(brand_row[c-1])
-                    if "Study Universe" not in brand and "Total" not in brand and brand != 'nan': cols.append(c); headers.append(brand)
-            df_clean = data_rows.iloc[:, cols]; df_clean.columns = headers
+                    if "Study Universe" not in brand and "Total" not in brand and brand != 'nan':
+                        cols.append(c)
+                        headers.append(brand)
+            df_clean = data_rows.iloc[:, cols]
+            df_clean.columns = headers
             df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
             data_cols = df_clean.columns[1:]
-            for c in data_cols: df_clean[c] = pd.to_numeric(df_clean[c].astype(str).str.replace(',', ''), errors='coerce')
+            for c in data_cols:
+                df_clean[c] = pd.to_numeric(df_clean[c].astype(str).str.replace(',', ''), errors='coerce')
             df_clean = df_clean.dropna(subset=data_cols, how='all')
             df_clean = df_clean[df_clean[data_cols].fillna(0).sum(axis=1) > 0]
             df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
             df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
-            st.success("Cleaned!"); st.download_button("Download CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
-        except: st.error("Could not find 'Weighted (000)' row.")
+            st.success("Cleaned!")
+            st.download_button("Download CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
+        except:
+            st.error("Could not find 'Weighted (000)' row.")
