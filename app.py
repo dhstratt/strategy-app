@@ -24,45 +24,47 @@ def load_data_advanced(uploaded_file, brand_row_num, metric_row_num):
             df = pd.read_excel(uploaded_file, header=None)
 
         # 2. Convert Excel Row Numbers (1-based) to Pandas Index (0-based)
-        brand_idx = brand_row_num - 1
-        metric_idx = metric_row_num - 1
+        brand_idx = int(brand_row_num) - 1
+        metric_idx = int(metric_row_num) - 1
 
         # Safety Check
         if brand_idx >= len(df) or metric_idx >= len(df):
             return pd.DataFrame(), f"Row number out of bounds. File has only {len(df)} rows."
 
         # 3. Extract Rows
-        # Force to string to avoid 'nan' float errors
-        brand_row = df.iloc[brand_idx].astype(str).replace('nan', '')
-        metric_row = df.iloc[metric_idx].astype(str).replace('nan', '')
+        # We take the raw row. We will force conversion in the loop.
+        brand_row = df.iloc[brand_idx].values
+        metric_row = df.iloc[metric_idx].values
 
         # 4. Forward Fill Brand Names (The Stitching)
-        # We iterate and fill manually to be safer than ffill on mixed types
         current_brand = ""
         combined_header = []
         
         for b, m in zip(brand_row, metric_row):
-            b = b.strip()
-            m = m.strip()
+            # DEFENSIVE CODING: Force everything to string, handling NaNs
+            b_str = str(b).strip()
+            m_str = str(m).strip()
             
-            if b: 
-                current_brand = b
+            # clean up 'nan' string artifacts if pandas converted NaN to 'nan'
+            if b_str.lower() == 'nan': b_str = ""
+            if m_str.lower() == 'nan': m_str = ""
+            
+            if b_str: 
+                current_brand = b_str
             
             # Create Label: "Life Cereal | Weighted (000)"
-            if current_brand and m:
-                label = f"{current_brand} | {m}"
+            if current_brand and m_str:
+                label = f"{current_brand} | {m_str}"
             elif current_brand:
                 label = current_brand
-            elif m:
-                label = m
+            elif m_str:
+                label = m_str
             else:
                 label = "Unknown"
             
             combined_header.append(label)
 
-        # 5. DEDUPLICATE COLUMN NAMES (The Crash Fix)
-        # Streamlit fails if two columns are named "Total | Vert%". 
-        # This adds .1, .2, etc. to duplicates.
+        # 5. DEDUPLICATE COLUMN NAMES
         seen = {}
         unique_header = []
         for col in combined_header:
