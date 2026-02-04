@@ -94,7 +94,7 @@ with tab1:
         passive_files = st.file_uploader("2. Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
         st.divider()
 
-        # 3. LAYER MANAGER (NEW)
+        # 3. LAYER MANAGER
         st.header("🎨 Layer Manager")
         
         # A. Base Map Config
@@ -107,9 +107,6 @@ with tab1:
             c1, c2 = st.columns(2)
             base_configs["brands"] = c1.checkbox("Brands", True)
             base_configs["attrs"] = c2.checkbox("Statements", True)
-            
-            # Filters are populated after data load, but we create placeholders here
-            # Logic handled below in "Render" section to ensure data exists
         
         # B. Passive Configs
         passive_configs = []
@@ -117,13 +114,8 @@ with tab1:
             st.subheader("Passive Layers")
             for p_file in passive_files:
                 with st.expander(f"{p_file.name}", expanded=False):
-                    # Label
                     new_name = st.text_input("Layer Label", p_file.name, key=f"lbl_{p_file.name}")
-                    
-                    # Visibility
                     is_visible = st.checkbox("Visible", value=True, key=f"vis_{p_file.name}")
-                    
-                    # Mode
                     mode = st.radio("Map as:", ["Auto", "Statements (Stars)", "Brands (Diamonds)"], key=f"mode_{p_file.name}")
                     
                     passive_configs.append({
@@ -189,12 +181,10 @@ with tab1:
                         if user_mode == "Statements (Stars)": is_row_projection = True
                         elif user_mode == "Brands (Diamonds)": is_row_projection = False
                         else:
-                            # Auto
                             if len(common_brands) > len(common_attrs): is_row_projection = True
                             else: is_row_projection = False
                         
                         if is_row_projection:
-                            # Project ROWS (Stars)
                             if len(common_brands) > 0:
                                 p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
@@ -202,12 +192,11 @@ with tab1:
                                 res = pd.DataFrame(proj, columns=['x', 'y'])
                                 res['Label'] = p_aligned.index
                                 res['Shape'] = 'star'
-                                res['LayerName'] = config["name"] # Use custom name
+                                res['LayerName'] = config["name"]
                                 res['Visible'] = config["visible"]
                                 res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                                 passive_layer_data.append(res)
                         else:
-                            # Project COLS (Diamonds)
                             if len(common_attrs) > 0:
                                 p_aligned = p_clean.reindex(df_math.index).fillna(0)
                                 p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
@@ -215,11 +204,10 @@ with tab1:
                                 res = pd.DataFrame(proj, columns=['x', 'y'])
                                 res['Label'] = p_aligned.columns
                                 res['Shape'] = 'diamond'
-                                res['LayerName'] = config["name"] # Use custom name
+                                res['LayerName'] = config["name"]
                                 res['Visible'] = config["visible"]
                                 res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                                 passive_layer_data.append(res)
-                                
                     except: pass
                 
                 st.session_state.passive_data = passive_layer_data
@@ -231,7 +219,7 @@ with tab1:
         df_attrs = st.session_state.df_attrs
         passive_layer_data = st.session_state.passive_data
         
-        # --- SIDEBAR FILTERS (Populated now that data exists) ---
+        # --- SIDEBAR FILTERS ---
         with st.sidebar:
             if show_base:
                 with st.expander("Filter Base Map", expanded=False):
@@ -247,21 +235,19 @@ with tab1:
                         base_configs["sel_attrs"] = st.multiselect("Statements:", all_a, default=top_15)
                     else: base_configs["sel_attrs"] = all_a
             
-            # Additional Passive Filters
+            # Passive Filters (FIXED: Checks if empty)
             for i, layer in enumerate(passive_layer_data):
-                if layer['Visible'].iloc[0]:
+                if not layer.empty and layer['Visible'].iloc[0]:
                     with st.expander(f"Filter {layer['LayerName'].iloc[0]}", expanded=False):
                          all_l = sorted(layer['Label'].tolist())
                          if not st.checkbox("All", True, key=f"all_l_{i}"):
                              sel = st.multiselect("Items:", all_l, default=all_l, key=f"sel_l_{i}")
-                             # Update layer with selection
                              passive_layer_data[i] = layer[layer['Label'].isin(sel)]
 
             st.divider()
             st.metric("Map Stability", f"{st.session_state.accuracy:.1f}%")
             if st.session_state.accuracy < 60: st.error("⚠️ Unstable Map")
 
-            # Spotlight
             st.subheader("🔦 Brand Spotlight")
             all_b_spot = sorted(df_brands['Label'].tolist())
             focus_brand = st.selectbox("Highlight:", ["None"] + all_b_spot)
@@ -275,17 +261,12 @@ with tab1:
             hero = df_brands[df_brands['Label'] == focus_brand]
             if not hero.empty:
                 hx, hy = hero.iloc[0]['x'], hero.iloc[0]['y']
-                # Calculate distances for everything
-                hero_related = [] # Only highlight if close? 
-                # Actually, standard spotlight logic:
-                # Dim everything else.
 
         def get_style(lbl, is_brand=False):
             c = '#1f77b4' if is_brand else '#d62728'
             op = 1.0 if is_brand else 0.7
             if focus_brand != "None":
                 if lbl == focus_brand: return (c, 1.0)
-                # Simple logic: Dim everything else
                 return ('#d3d3d3', 0.2)
             return c, op
 
@@ -298,7 +279,6 @@ with tab1:
                 bc.append(c); bo.append(o)
             fig.add_trace(go.Scatter(x=plot_brands['x'], y=plot_brands['y'], mode='markers', marker=dict(size=10, color=bc, opacity=bo, line=dict(width=1, color='white')), hovertext=plot_brands['Label'], name='Brands'))
             
-            # Annotations
             for _, r in plot_brands.iterrows():
                 c, o = get_style(r['Label'], True)
                 if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
@@ -316,10 +296,10 @@ with tab1:
                 c, o = get_style(r['Label'], False)
                 if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
 
-        # 3. PASSIVE LAYERS
+        # 3. PASSIVE LAYERS (FIXED: Checks if empty)
         pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
         for i, layer in enumerate(passive_layer_data):
-            if layer['Visible'].iloc[0]:
+            if not layer.empty and layer['Visible'].iloc[0]:
                 pc = pass_colors[i % len(pass_colors)]
                 lc = [pc if focus_brand == "None" else '#d3d3d3' for _ in range(len(layer))]
                 lo = [0.9 if focus_brand == "None" else 0.2 for _ in range(len(layer))]
