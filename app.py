@@ -220,9 +220,23 @@ fig.update_layout(
     height=800,
     # The Compass: Auto-Labeling the Axes
     xaxis=dict(
-        title=f"← More {x_min_attr} ........................... More {x_max_attr} →",
+        title=f"← More {x_min_attr} ... More {x_max_attr} →",
         title_font=dict(size=12, color='gray'),
         zeroline=True, zerolinewidth=2, zerolinecolor='gray', showgrid=False
     ),
     yaxis=dict(
-        title=f"← More {y_min_attr} ... More {y_max_attr}
+        title=f"← More {y_min_attr} ... More {y_max_attr} →",
+        title_font=dict(size=12, color='gray'),
+        zeroline=True, zerolinewidth=2, zerolinecolor='gray', showgrid=False
+    ),
+    showlegend=False,
+    dragmode='pan'
+)
+
+# Quadrant Backgrounds (Subtle zones)
+fig.add_shape(type="rect", x0=0, y0=0, x1=df_brands['x'].max()*1.2, y1=df_brands['y'].max()*1.2, 
+              fillcolor="blue", opacity=0.03, layer="below", line_width=0)
+fig.add_shape(type="rect", x0=df_brands['x'].min()*1.2, y0=df_brands['y'].min()*1.2, x1=0, y1=0, 
+              fillcolor="blue", opacity=0.03, layer="below", line_width=0)
+
+st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
