@@ -66,9 +66,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+# --- SESSION STATE INITIALIZATION (CRASH FIX) ---
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = False
+if 'passive_data' not in st.session_state:
+    st.session_state.passive_data = []  # Initialize as empty list to prevent Attribute Error
 if 'mindset_report' not in st.session_state:
     st.session_state.mindset_report = []
 if 'messages' not in st.session_state:
@@ -131,9 +133,9 @@ with tab1:
             proj_name = st.text_input("Project Name", "My_Landscape_Map")
             if st.session_state.processed_data:
                 project_data = {
-                    'df_brands': st.session_state.df_brands, 
-                    'df_attrs': st.session_state.df_attrs, 
-                    'passive_data': st.session_state.passive_data, 
+                    'df_brands': st.session_state.df_brands,
+                    'df_attrs': st.session_state.df_attrs,
+                    'passive_data': st.session_state.passive_data,
                     'accuracy': st.session_state.accuracy,
                     'landscape_avg_weight': getattr(st.session_state, 'landscape_avg_weight', 1.0)
                 }
@@ -144,9 +146,25 @@ with tab1:
         passive_files = st.file_uploader("Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
         
         st.divider()
+        st.header("🎨 Layer Visibility")
+        col_base_1, col_base_2 = st.columns(2)
+        show_base_cols = col_base_1.checkbox("Base Columns", True, key="viz_base_cols")
+        show_base_rows = col_base_2.checkbox("Base Rows", True, key="viz_base_rows")
+        
+        passive_configs = []
+        if passive_files:
+            st.subheader("Passive Layers")
+            for p_file in passive_files:
+                with st.expander(f"⚙️ {p_file.name}"):
+                    p_name = st.text_input("Label", p_file.name, key=f"name_{p_file.name}")
+                    p_show = st.checkbox("Show Layer", True, key=f"show_{p_file.name}")
+                    p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{p_file.name}")
+                    passive_configs.append({"file": p_file, "name": p_name, "show": p_show, "mode": p_mode})
+        
+        st.divider()
         st.header("🏷️ Label Manager")
         lbl_cols = st.checkbox("Show Column Labels", True)
-        lbl_rows = st.checkbox("Show Row Labels", False)
+        lbl_rows = st.checkbox("Show Row Labels", True)
         lbl_passive = st.checkbox("Show Passive Labels", True)
 
         st.divider()
@@ -179,7 +197,6 @@ with tab1:
                 row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
                 col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
                 
-                # Save to session state
                 st.session_state.df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
                 st.session_state.df_brands['Label'] = df_math.columns
                 
@@ -191,7 +208,6 @@ with tab1:
                 st.session_state.landscape_avg_weight = df_math.sum(axis=1).mean()
                 st.session_state.processed_data = True
 
-                # Process Passive Layers
                 passive_layer_data = []
                 for cfg in passive_configs:
                     try:
@@ -226,10 +242,12 @@ with tab1:
 
     # --- RENDER ---
     if st.session_state.processed_data:
-        # Define local variables from session state to prevent NameError
         df_brands = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_attrs = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
-        passive_layer_data = [rotate_coords(l.copy(), map_rotation) for l in st.session_state.passive_data]
+        # SAFE LOAD: Ensure passive data exists before accessing it
+        passive_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
+        passive_layer_data = [rotate_coords(l.copy(), map_rotation) for l in passive_source]
+        
         cluster_colors = px.colors.qualitative.Bold
         
         mindset_report = []
