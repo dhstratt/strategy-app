@@ -10,7 +10,7 @@ st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
 # --- MAIN APP ---
 st.title("🧠 The Strategy Engine")
 st.markdown("Upload your **Cleaned** CSV (Attributes in Col A, Brands in Cols B+).")
-st.caption("💡 **Pro Tip:** Check the sidebar to rename the axes and 'interpret' the map strategy.")
+st.caption("💡 **Pro Tip:** The map calculates positions using the **ENTIRE** dataset. The sliders just zoom in on the important parts.")
 
 # 1. UPLOAD
 uploaded_file = st.sidebar.file_uploader("Upload Clean CSV/Excel", type=["csv", "xlsx"])
@@ -52,7 +52,7 @@ if cleaned_df.empty:
     st.error("Error: Data is empty after cleaning.")
     st.stop()
 
-# 5. THE MATH (SVD)
+# 5. THE MATH (SVD) - CALCULATED ON TOTAL DATASET
 N = cleaned_df.values
 P = N / N.sum()
 r = P.sum(axis=1)
@@ -78,33 +78,24 @@ df_attrs['Type'] = 'Attribute'
 df_attrs['Distinctiveness'] = np.sqrt(df_attrs['x']**2 + df_attrs['y']**2)
 
 # --- THE INTERPRETATION ENGINE ---
-# This function finds the most common meaningful word in the top attributes to "Guess" the theme
 def suggest_theme(df, direction, n=4):
-    # Sort by direction
     if direction == 'Right': subset = df.sort_values('x', ascending=False).head(n)['Label']
     elif direction == 'Left': subset = df.sort_values('x', ascending=True).head(n)['Label']
     elif direction == 'Top': subset = df.sort_values('y', ascending=False).head(n)['Label']
     elif direction == 'Bottom': subset = df.sort_values('y', ascending=True).head(n)['Label']
     
-    # 1. Simple Join (Backup)
     top_1 = subset.iloc[0]
-    
-    # 2. Smart Word Extraction
     all_text = " ".join(subset.astype(str)).lower()
-    # Remove survey filler words
     stop_words = ['i', 'the', 'and', 'to', 'of', 'a', 'in', 'is', 'it', 'my', 'for', 'on', 'with', 'often', 'prefer', 'like', 'typically', 'look', 'buy', 'make', 'feel', 'more', 'less', 'most']
     words = [w.strip(".,()&") for w in all_text.split() if w.strip(".,()&") not in stop_words and len(w) > 2]
     
     if words:
         most_common = collections.Counter(words).most_common(1)[0]
-        # If the most common word appears more than once, use it as the theme
         if most_common[1] > 1:
-            return most_common[0].capitalize() # e.g., "Healthy"
+            return most_common[0].capitalize() 
             
-    # Fallback: Return the top attribute (truncated)
     return (top_1[:30] + '..') if len(top_1) > 30 else top_1
 
-# Generate Suggestions
 sugg_right = suggest_theme(df_attrs, 'Right')
 sugg_left = suggest_theme(df_attrs, 'Left')
 sugg_top = suggest_theme(df_attrs, 'Top')
@@ -113,9 +104,6 @@ sugg_bottom = suggest_theme(df_attrs, 'Bottom')
 # --- SIDEBAR: STRATEGIST CONTROLS ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🏷️ Axis Interpretation")
-st.sidebar.caption("The app has guessed the themes based on attribute clusters. **Rename them below to interpret the strategy.**")
-
-# Editable Inputs
 theme_left = st.sidebar.text_input("← Left Axis Theme", value=sugg_left)
 theme_right = st.sidebar.text_input("Right Axis Theme →", value=sugg_right)
 theme_bottom = st.sidebar.text_input("↓ Bottom Axis Theme", value=sugg_bottom)
@@ -134,7 +122,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🔦 Focus Mode")
 focus_brand = st.sidebar.selectbox("Highlight a specific brand:", ["None"] + df_brands['Label'].tolist())
 
-# --- FILTERING LOGIC ---
+# --- FILTERING LOGIC (Does not affect Math, only View) ---
 top_brands = df_brands.sort_values('Distinctiveness', ascending=False).head(n_brands_show)
 top_attrs = df_attrs.sort_values('Distinctiveness', ascending=False).head(n_attrs_show)
 inertia = s**2
@@ -143,15 +131,12 @@ accuracy = (np.sum(inertia[:2]) / np.sum(inertia)) * 100
 st.divider()
 col1, col2 = st.columns([1, 3])
 col1.metric("Map Accuracy", f"{accuracy:.1f}%")
-if focus_brand != "None":
-    col2.info(f"🔦 **Focus Mode Active:** Highlighting **{focus_brand}**.")
-else:
-    col2.caption(f"Map interprets: **{theme_left} vs. {theme_right}** and **{theme_top} vs. {theme_bottom}**.")
+# Explicit Confirmation Message
+col2.info(f"**Data Monitor:** Analysis calculated on all **{total_brands}** brands and **{total_attrs}** attributes. Currently displaying the top **{n_brands_show}** brands.")
 
 # --- INTERACTIVE MAP ---
 fig = go.Figure()
 
-# 1. DEFINE COLORS
 brand_color_default = '#1f77b4'
 attr_color_default = '#d62728'
 dim_color = '#d3d3d3'
@@ -171,7 +156,6 @@ else:
     brand_opacity = 1.0
     attr_opacity = 0.7
 
-# 2. ADD TRACES
 fig.add_trace(go.Scatter(
     x=top_brands['x'], y=top_brands['y'],
     mode='markers',
@@ -191,7 +175,6 @@ fig.add_trace(go.Scatter(
     hovertemplate="<b>%{text}</b><extra></extra>"
 ))
 
-# 3. DRAGGABLE LABELS
 annotations = []
 for i, row in top_brands.iterrows():
     if focus_brand != "None" and row['Label'] != focus_brand: continue
@@ -216,7 +199,6 @@ if show_attr_labels:
             bgcolor="rgba(255,255,255,0.6)"
         ))
 
-# 4. LAYOUT & INTERPRETATION AXES
 fig.update_layout(
     annotations=annotations,
     title={
@@ -225,7 +207,6 @@ fig.update_layout(
     },
     template="plotly_white",
     height=800,
-    # The Interpreted Axes
     xaxis=dict(
         title=f"← {theme_left} ........................................... {theme_right} →",
         title_font=dict(size=16, color='black', family="Arial Black"),
@@ -240,7 +221,6 @@ fig.update_layout(
     dragmode='pan'
 )
 
-# Quadrant Backgrounds
 fig.add_shape(type="rect", x0=0, y0=0, x1=df_brands['x'].max()*1.2, y1=df_brands['y'].max()*1.2, 
               fillcolor="blue", opacity=0.03, layer="below", line_width=0)
 fig.add_shape(type="rect", x0=df_brands['x'].min()*1.2, y0=df_brands['y'].min()*1.2, x1=0, y1=0, 
@@ -251,19 +231,19 @@ st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scroll
 # --- AUTOMATED STORY GENERATOR (Uses Your Labels) ---
 st.subheader("📝 Strategic Interpretation")
 
-# Find 'Winner' brands for each quadrant
 def get_quadrant_winner(df, q_x, q_y):
     quad = df[(df['x'] * q_x > 0) & (df['y'] * q_y > 0)]
+    # We check if the winner is in the 'visible' list to avoid confusing the user
+    # but the calculation finds the true winner of the quadrant
     if not quad.empty:
         return quad.sort_values('Distinctiveness', ascending=False).iloc[0]['Label']
     return "Niche Players"
 
-winner_ne = get_quadrant_winner(df_brands, 1, 1)   # Top Right
-winner_nw = get_quadrant_winner(df_brands, -1, 1)  # Top Left
-winner_se = get_quadrant_winner(df_brands, 1, -1)  # Bottom Right
-winner_sw = get_quadrant_winner(df_brands, -1, -1) # Bottom Left
+winner_ne = get_quadrant_winner(df_brands, 1, 1)   
+winner_nw = get_quadrant_winner(df_brands, -1, 1)  
+winner_se = get_quadrant_winner(df_brands, 1, -1)  
+winner_sw = get_quadrant_winner(df_brands, -1, -1) 
 
-# Story Logic
 explanation = f"""
 **1. The Primary Tension (Horizontal):** The market is primarily divided by **{theme_left}** vs. **{theme_right}**. This is the single biggest differentiator between brands in this category.
 
