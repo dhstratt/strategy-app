@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import collections
-import io
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
@@ -16,12 +15,16 @@ tab1, tab2 = st.tabs(["🧠 The Strategy Engine", "🧹 MRI Data Cleaner"])
 # ==========================================
 with tab1:
     st.title("🧠 The Strategy Engine")
-    st.markdown("Upload **Cleaned** Data below.")
-
+    
+    # --- LAYOUT: 2 Columns (Sidebar vs Main) ---
+    col_nav, col_main = st.columns([1, 4])
+    
     # --- SIDEBAR: DATA UPLOAD ---
-    st.sidebar.header("📂 Data Manager")
-    uploaded_file = st.sidebar.file_uploader("1. Upload Core Data", type=["csv", "xlsx"], key="active")
-    passive_files = st.sidebar.file_uploader("2. Upload Passive Layers", type=["csv", "xlsx"], accept_multiple_files=True, key="passive")
+    with st.sidebar:
+        st.header("📂 Data Manager")
+        uploaded_file = st.file_uploader("1. Upload Core Data", type=["csv", "xlsx"], key="active")
+        passive_files = st.file_uploader("2. Upload Passive Layers", type=["csv", "xlsx"], accept_multiple_files=True, key="passive")
+        st.divider()
 
     # --- HELPER FUNCTIONS ---
     def load_file(file):
@@ -40,17 +43,11 @@ with tab1:
         return df[valid_cols]
 
     if uploaded_file is not None:
-        # --- 1. PROCESS CORE DATA ---
         try:
+            # --- 1. PROCESS CORE DATA ---
             df_active_raw = load_file(uploaded_file)
-            st.sidebar.success(f"Loaded: {uploaded_file.name}")
             
-            # Initial Clean
-            label_col = df_active_raw.columns[0]
-            # We need all brands initially to run the math correctly
-            all_brands = df_active_raw.columns[1:].tolist()
-            
-            # Run Math on EVERYTHING first (Mathematical Integrity)
+            # Initial Clean & Math
             df_math = clean_df(df_active_raw)
             df_math = df_math.loc[(df_math != 0).any(axis=1)] 
             df_math = df_math.loc[:, (df_math != 0).any(axis=0)]
@@ -65,11 +62,17 @@ with tab1:
             R = (P - E) / np.sqrt(E)
             U, s, Vh = np.linalg.svd(R, full_matrices=False)
             
+            # --- CALCULATE MAP ACCURACY ---
+            inertia = s**2
+            total_inertia = np.sum(inertia)
+            explained_inertia = np.sum(inertia[:2])
+            map_accuracy = (explained_inertia / total_inertia) * 100
+            
             # Coordinates
             row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
             col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
             
-            # Create Master DataFrames
+            # Master DataFrames
             df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
             df_brands['Label'] = df_math.columns
             df_brands['Type'] = 'Brand (Core)'
@@ -87,161 +90,140 @@ with tab1:
                     try:
                         p_raw = load_file(p_file)
                         p_clean = clean_df(p_raw)
-                        
                         common_brands = list(set(p_clean.columns) & set(df_math.columns))
                         common_attrs = list(set(p_clean.index) & set(df_math.index))
                         
-                        # Logic A: Passive Attributes (Rows)
-                        if len(common_brands) > len(common_attrs):
+                        if len(common_brands) > len(common_attrs): # Passive Attributes
                             p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
-                            row_sums = p_aligned.sum(axis=1)
-                            row_sums[row_sums == 0] = 1
-                            p_profiles = p_aligned.div(row_sums, axis=0)
-                            proj = p_profiles.values @ col_coords[:, :2]
-                            proj = proj / s[:2]
-                            
+                            p_profiles = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
+                            proj = p_profiles.values @ col_coords[:, :2] / s[:2]
                             res = pd.DataFrame(proj, columns=['x', 'y'])
                             res['Label'] = p_aligned.index
-                            res['Type'] = f"Layer: {p_file.name}"
                             res['LayerName'] = p_file.name
                             res['Shape'] = 'star'
-                            
-                        # Logic B: Passive Brands (Columns)
-                        else:
+                        else: # Passive Brands
                             p_aligned = p_clean.reindex(df_math.index).fillna(0)
-                            col_sums = p_aligned.sum(axis=0)
-                            col_sums[col_sums == 0] = 1
-                            p_profiles = p_aligned.div(col_sums, axis=1)
-                            proj = p_profiles.T.values @ row_coords[:, :2]
-                            proj = proj / s[:2]
-                            
+                            p_profiles = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
+                            proj = p_profiles.T.values @ row_coords[:, :2] / s[:2]
                             res = pd.DataFrame(proj, columns=['x', 'y'])
                             res['Label'] = p_aligned.columns
-                            res['Type'] = f"Layer: {p_file.name}"
                             res['LayerName'] = p_file.name
                             res['Shape'] = 'diamond'
 
                         res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                         passive_layer_data.append(res)
-                    except Exception as e:
-                        st.sidebar.error(f"Error in {p_file.name}: {e}")
+                    except: pass
 
-            # --- 3. THE CONTROL CENTER (Sidebar UX) ---
-            st.sidebar.markdown("---")
-            st.sidebar.header("🎨 Map Layers")
-            
-            # A. Core Layer Control
-            with st.sidebar.expander("🔹 Core Map (Active)", expanded=True):
-                # 1. Brands
-                all_brand_labels = sorted(df_brands['Label'].tolist())
-                # Default: All brands usually
-                sel_brands = st.multiselect("Select Brands:", all_brand_labels, default=all_brand_labels)
+            # --- 3. SIDEBAR CONTROL CENTER ---
+            with st.sidebar:
+                st.header("🎯 Map Controls")
                 
-                # 2. Statements
-                all_attr_labels = sorted(df_attrs['Label'].tolist())
-                # Default: Top 15 distinct
-                top_15_attrs = df_attrs.sort_values('Distinctiveness', ascending=False).head(15)['Label'].tolist()
-                sel_attrs = st.multiselect("Select Statements:", all_attr_labels, default=top_15_attrs)
-            
-            # B. Passive Layer Controls
-            sel_passive_data = []
-            if passive_layer_data:
-                st.sidebar.markdown("---")
-                st.sidebar.subheader("🔸 Passive Layers")
+                # METRIC: Map Accuracy
+                st.metric("Map Stability", f"{map_accuracy:.1f}%", help="Percentage of variance explained by these 2 dimensions. Higher is better.")
                 
-                for layer in passive_layer_data:
-                    layer_name = layer['LayerName'].iloc[0]
-                    with st.sidebar.expander(f"{layer_name}", expanded=False):
-                        # Sort alphabetical
-                        l_labels = sorted(layer['Label'].tolist())
-                        # Default: Top 10 to keep it clean.
-                        l_top = layer.sort_values('Distinctiveness', ascending=False).head(10)['Label'].tolist()
-                        
-                        sel_l_items = st.multiselect(f"Show items from {layer_name}:", l_labels, default=l_top)
-                        
-                        # Filter this layer's dataframe
-                        if sel_l_items:
-                            filtered_layer = layer[layer['Label'].isin(sel_l_items)]
-                            sel_passive_data.append(filtered_layer)
+                # A. Core Brands Control
+                with st.expander("🔹 Core Brands", expanded=True):
+                    show_all_brands = st.checkbox("Show All Brands", value=True)
+                    if not show_all_brands:
+                        all_b = sorted(df_brands['Label'].tolist())
+                        sel_brands = st.multiselect("Filter Brands (Searchable):", all_b, default=all_b)
+                    else:
+                        sel_brands = df_brands['Label'].tolist()
 
-            # --- 4. FILTER DATA FOR PLOTTING ---
+                # B. Core Statements Control
+                with st.expander("🔹 Core Statements", expanded=True):
+                    show_all_attrs = st.checkbox("Show All Statements", value=False)
+                    if not show_all_attrs:
+                        # Default to top 15 distinctive for cleanliness
+                        all_a = sorted(df_attrs['Label'].tolist())
+                        top_15 = df_attrs.sort_values('Distinctiveness', ascending=False).head(15)['Label'].tolist()
+                        sel_attrs = st.multiselect("Filter Statements (Searchable):", all_a, default=top_15)
+                    else:
+                        sel_attrs = df_attrs['Label'].tolist()
+
+                # C. Passive Layers Control
+                sel_passive_data = []
+                if passive_layer_data:
+                    st.subheader("🔸 Passive Layers")
+                    for layer in passive_layer_data:
+                        lname = layer['LayerName'].iloc[0]
+                        with st.expander(f"{lname}", expanded=False):
+                            show_all_pass = st.checkbox(f"Show All: {lname}", value=True)
+                            if not show_all_pass:
+                                all_l = sorted(layer['Label'].tolist())
+                                sel_l = st.multiselect("Filter Items:", all_l, default=all_l)
+                            else:
+                                sel_l = layer['Label'].tolist()
+                            
+                            if sel_l:
+                                sel_passive_data.append(layer[layer['Label'].isin(sel_l)])
+
+            # --- 4. FILTER DATA ---
             plot_brands = df_brands[df_brands['Label'].isin(sel_brands)]
             plot_attrs = df_attrs[df_attrs['Label'].isin(sel_attrs)]
 
             # --- 5. PLOT ---
             fig = go.Figure()
 
-            # Core Brands (Blue Circles)
+            # Core Brands
             fig.add_trace(go.Scatter(
-                x=plot_brands['x'], y=plot_brands['y'],
-                mode='markers+text', name='Brands',
-                text=plot_brands['Label'], textposition="top center",
+                x=plot_brands['x'], y=plot_brands['y'], mode='markers+text',
+                text=plot_brands['Label'], textposition="top center", name="Brands",
                 marker=dict(size=12, color='#1f77b4', line=dict(width=1, color='white')),
-                textfont=dict(size=11, color='#1f77b4', family="Arial Black")
+                textfont=dict(family="Arial Black", size=11, color='#1f77b4')
             ))
 
-            # Core Attributes (Red Circles)
+            # Core Attributes
             fig.add_trace(go.Scatter(
-                x=plot_attrs['x'], y=plot_attrs['y'],
-                mode='markers+text', name='Statements',
-                text=plot_attrs['Label'], textposition="top center",
+                x=plot_attrs['x'], y=plot_attrs['y'], mode='markers+text',
+                text=plot_attrs['Label'], textposition="top center", name="Statements",
                 marker=dict(size=8, color='#d62728', opacity=0.7),
                 textfont=dict(size=10, color='#d62728')
             ))
 
-            # Passive Layers (Colored Stars/Diamonds)
-            passive_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
+            # Passive Layers
+            colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
             for i, layer in enumerate(sel_passive_data):
-                l_color = passive_colors[i % len(passive_colors)]
-                symbol = layer['Shape'].iloc[0] # diamond or star
-                
+                c = colors[i % len(colors)]
+                sym = layer['Shape'].iloc[0]
                 fig.add_trace(go.Scatter(
-                    x=layer['x'], y=layer['y'],
-                    mode='markers+text', name=layer['LayerName'].iloc[0],
-                    text=layer['Label'], textposition="top center",
-                    marker=dict(size=10, symbol=symbol, color=l_color, opacity=0.9, line=dict(width=1, color='white')),
-                    textfont=dict(size=10, color=l_color)
+                    x=layer['x'], y=layer['y'], mode='markers+text',
+                    text=layer['Label'], textposition="top center", name=layer['LayerName'].iloc[0],
+                    marker=dict(size=10, symbol=sym, color=c, opacity=0.9, line=dict(width=1, color='white')),
+                    textfont=dict(size=10, color=c)
                 ))
 
-            # --- 6. UX & ZOOM IMPROVEMENTS ---
+            # --- 6. UX & ZOOM ---
             fig.update_layout(
                 title={'text': "Strategic Perceptual Map", 'y':0.95, 'x':0.5, 'xanchor': 'center'},
-                template="plotly_white",
-                height=800,
-                # Clean Axes (No Interpretation)
-                xaxis=dict(zeroline=True, showgrid=False, showticklabels=False),
-                yaxis=dict(zeroline=True, showgrid=False, showticklabels=False),
-                # ZOOM PHYSICS: Locking Aspect Ratio
-                yaxis_scaleanchor="x", 
-                yaxis_scaleratio=1,
-                dragmode='pan', 
-                hovermode='closest'
+                template="plotly_white", height=850,
+                xaxis=dict(zeroline=True, showgrid=False, showticklabels=False, zerolinecolor='#E5E5E5'),
+                yaxis=dict(zeroline=True, showgrid=False, showticklabels=False, zerolinecolor='#E5E5E5'),
+                # LOCK ASPECT RATIO 1:1
+                yaxis_scaleanchor="x", yaxis_scaleratio=1,
+                dragmode='pan', hovermode='closest'
             )
-
-            # Add Quadrants
+            
+            # Quadrants
             fig.add_shape(type="rect", x0=0, y0=0, x1=10, y1=10, fillcolor="blue", opacity=0.03, layer="below", line_width=0)
             fig.add_shape(type="rect", x0=-10, y0=-10, x1=0, y1=0, fillcolor="blue", opacity=0.03, layer="below", line_width=0)
 
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
         except Exception as e:
-            st.error(f"Error processing data: {e}")
+            st.error(f"Something went wrong: {e}")
 
 # ==========================================
 # TAB 2: DATA CLEANER
 # ==========================================
 with tab2:
     st.header("🧹 MRI Data Cleaner")
-    st.markdown("Upload a messy MRI Crosstab (CSV), and this will clean it for the map.")
-    
-    raw_mri = st.file_uploader("Upload Raw MRI CSV", type=["csv"])
+    st.markdown("Upload a raw MRI Crosstab (CSV) to clean it for the map.")
+    raw_mri = st.file_uploader("Upload Raw MRI", type=["csv"])
     
     if raw_mri:
         try:
-            # Simple cleaning logic from before
             df_raw = pd.read_csv(raw_mri, header=None)
-            
-            # Find Weighted row
             metric_row_idx = -1
             for i, row in df_raw.iterrows():
                 if row.astype(str).str.contains("Weighted (000)", regex=False).any():
@@ -253,8 +235,7 @@ with tab2:
                 metric_row = df_raw.iloc[metric_row_idx]
                 data_rows = df_raw.iloc[metric_row_idx + 1:].copy()
                 
-                cols = [0]
-                headers = ['Attitude']
+                cols, headers = [0], ['Attitude']
                 for c in range(1, len(metric_row)):
                     if "Weighted" in str(metric_row[c]):
                         brand = str(brand_row[c-1])
@@ -268,13 +249,8 @@ with tab2:
                 df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
                 
                 st.success("File Cleaned!")
-                st.dataframe(df_clean.head())
-                
-                # Download Button
-                csv = df_clean.to_csv(index=False).encode('utf-8')
-                st.download_button("Download Clean CSV", csv, "Cleaned_MRI_Data.csv", "text/csv")
+                st.download_button("Download Clean CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
             else:
                 st.error("Could not find 'Weighted (000)' row.")
-                
         except Exception as e:
-            st.error(f"Error cleaning file: {e}")
+            st.error(f"Error: {e}")
