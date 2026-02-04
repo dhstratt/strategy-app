@@ -56,11 +56,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE INITIALIZATION ---
+# --- SESSION STATE ---
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = False
-if 'passive_data' not in st.session_state:
-    st.session_state.passive_data = [] 
 if 'mindset_report' not in st.session_state:
     st.session_state.mindset_report = []
 if 'messages' not in st.session_state:
@@ -238,47 +236,61 @@ with tab1:
         
         mindset_report = []
         if enable_clustering and HAS_SKLEARN:
-            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
-            df_attrs['Cluster'] = kmeans.fit_predict(df_attrs[['x', 'y']])
-            centroids = kmeans.cluster_centers_
-            df_brands['Cluster'] = kmeans.predict(df_brands[['x', 'y']])
+            # --- UPDATED: TRUE CO-CLUSTERING ---
+            # 1. Gather ALL points (Active + All Passives) into one pool
+            pool_data = df_attrs[['x', 'y']].copy()
+            for layer in passive_layer_data:
+                pool_data = pd.concat([pool_data, layer[['x', 'y']]])
             
+            # 2. Fit K-Means on the ENTIRE pool
+            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool_data)
+            centroids = kmeans.cluster_centers_
+            
+            # 3. Predict clusters for every dataset independently
+            df_attrs['Cluster'] = kmeans.predict(df_attrs[['x', 'y']])
+            df_brands['Cluster'] = kmeans.predict(df_brands[['x', 'y']])
+            for layer in passive_layer_data:
+                if not layer.empty: layer['Cluster'] = kmeans.predict(layer[['x', 'y']])
+            
+            # 4. Generate Report
             for i in range(num_clusters):
                 c_actives = df_attrs[df_attrs['Cluster'] == i].copy()
-                c_actives['dist'] = np.sqrt((c_actives['x'] - centroids[i][0])**2 + (c_actives['y'] - centroids[i][1])**2)
+                if not c_actives.empty:
+                    c_actives['dist'] = np.sqrt((c_actives['x'] - centroids[i][0])**2 + (c_actives['y'] - centroids[i][1])**2)
+                
                 c_passives_list = []
                 for layer in passive_layer_data:
-                    l_check = layer.copy()
-                    l_check['Cluster'] = kmeans.predict(l_check[['x', 'y']])
-                    p_match = l_check[l_check['Cluster'] == i].copy()
+                    p_match = layer[layer['Cluster'] == i].copy()
                     if not p_match.empty:
                         p_match['dist'] = np.sqrt((p_match['x'] - centroids[i][0])**2 + (p_match['y'] - centroids[i][1])**2)
                         c_passives_list.append(p_match)
                 
-                if c_passives_list:
-                    c_all_signals = pd.concat([c_actives[['Label', 'Weight', 'dist']] , pd.concat(c_passives_list)[['Label', 'Weight', 'dist']]])
-                else:
-                    c_all_signals = c_actives[['Label', 'Weight', 'dist']]
+                # Combine Signals
+                c_all_signals = pd.DataFrame()
+                if not c_actives.empty: c_all_signals = pd.concat([c_all_signals, c_actives[['Label', 'Weight', 'dist']]])
+                if c_passives_list: c_all_signals = pd.concat([c_all_signals, pd.concat(c_passives_list)[['Label', 'Weight', 'dist']]])
                 
-                sorted_all = c_all_signals.sort_values('dist').drop_duplicates(subset=['Label'])
-                reach_proxy = sorted_all.head(5)['Weight'].mean()
-                avg_weight = getattr(st.session_state, 'landscape_avg_weight', 1.0)
-                if avg_weight == 0: avg_weight = 1.0
-                reach_share = (reach_proxy / avg_weight) * 25
-                
-                mindset_report.append({
-                    "id": i+1, "color": cluster_colors[i % len(cluster_colors)], 
-                    "rows": sorted_all['Label'].tolist()[:10], 
-                    "brands": df_brands[df_brands['Cluster'] == i]['Label'].tolist(),
-                    "size": reach_share, "threshold": 3 if reach_share > 10 else 2
-                })
-            for layer in passive_layer_data:
-                if not layer.empty: layer['Cluster'] = kmeans.predict(layer[['x', 'y']])
+                if not c_all_signals.empty:
+                    sorted_all = c_all_signals.sort_values('dist').drop_duplicates(subset=['Label'])
+                    reach_proxy = sorted_all.head(5)['Weight'].mean()
+                    avg_weight = getattr(st.session_state, 'landscape_avg_weight', 1.0)
+                    if avg_weight == 0: avg_weight = 1.0
+                    reach_share = (reach_proxy / avg_weight) * 25
+                    
+                    mindset_report.append({
+                        "id": i+1, "color": cluster_colors[i % len(cluster_colors)], 
+                        "rows": sorted_all['Label'].tolist()[:10],
+                        "brands": df_brands[df_brands['Cluster'] == i]['Label'].tolist(),
+                        "size": reach_share, "threshold": 3 if reach_share > 10 else 2
+                    })
+        st.session_state.mindset_report = mindset_report
 
         with placeholder_filters.container():
             st.metric("Landscape Stability", f"{st.session_state.accuracy:.1f}%")
+            if st.session_state.accuracy < 60: st.warning("⚠️ Low Stability Map")
             st.divider()
-            focus_brand = st.selectbox("Highlight Column:", ["None"] + sorted(df_brands['Label'].tolist()))
+            all_b_labels = sorted(df_brands['Label'].tolist())
+            focus_brand = st.selectbox("Highlight Column:", ["None"] + all_b_labels)
             with st.expander("Filter Base Map"):
                 sel_brands = st.multiselect("Columns:", sorted(df_brands['Label'].tolist()), default=df_brands['Label'].tolist()) if not st.checkbox("All Columns", True) else df_brands['Label'].tolist()
                 sel_attrs = st.multiselect("Rows:", sorted(df_attrs['Label'].tolist()), default=df_attrs.sort_values('Weight', ascending=False).head(15)['Label'].tolist()) if not st.checkbox("All Rows", True) else df_attrs['Label'].tolist()
@@ -288,9 +300,7 @@ with tab1:
                         l_labels = sorted(layer['Label'].tolist())
                         if not st.checkbox("All Items", True, key=f"f_all_{i}"):
                             passive_layer_data[i] = layer[layer['Label'].isin(st.multiselect("Select:", l_labels, default=l_labels, key=f"f_sel_{i}"))]
-        st.session_state.mindset_report = mindset_report
 
-        # --- PLOTTING (INTERACTIVE LABELS WITH LINES) ---
         fig = go.Figure()
         hl = []
         if focus_brand != "None":
@@ -309,7 +319,6 @@ with tab1:
             if lbl == focus_brand or lbl in hl: return base_c, 1.0
             return '#d3d3d3', 0.2
 
-        # Brands
         if show_base_cols:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
             res = [get_so(r['Label'], '#1f77b4') for _, r in plot_b.iterrows()]
@@ -323,7 +332,6 @@ with tab1:
                     c, o = get_so(r['Label'], '#1f77b4')
                     if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
 
-        # Mindsets
         if show_base_rows:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             if enable_clustering:
@@ -351,7 +359,6 @@ with tab1:
                         c, o = get_so(r['Label'], '#d62728')
                         if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
 
-        # Passives
         for i, layer in enumerate(passive_layer_data):
             if not layer.empty and layer['Visible'].iloc[0]:
                 bc = cluster_colors[i % len(cluster_colors)] if not enable_clustering else cluster_colors[layer['Cluster'].iloc[0] % len(cluster_colors)]
