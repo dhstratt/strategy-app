@@ -53,6 +53,16 @@ st.markdown("""
             border: 1px solid #444;
             line-height: 1.6;
         }
+        .logic-tag {
+            background: #333;
+            color: #fff;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-weight: 800;
+            margin-bottom: 15px;
+            display: inline-block;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -101,6 +111,7 @@ def rotate_coords(df, angle_deg):
 with tab1:
     st.title("🗺️ The Consumer Landscape")
     
+    # --- SIDEBAR ---
     with st.sidebar:
         st.header("📂 Data & Projects")
         with st.expander("💾 Manage Project", expanded=False):
@@ -112,13 +123,20 @@ with tab1:
                     st.session_state.df_attrs = data['df_attrs']
                     st.session_state.passive_data = data['passive_data']
                     st.session_state.accuracy = data['accuracy']
+                    st.session_state.landscape_avg_weight = data.get('landscape_avg_weight', 1.0)
                     st.session_state.processed_data = True
                     st.success("Loaded!")
                     st.rerun()
                 except: st.error("Error loading file")
             proj_name = st.text_input("Project Name", "My_Landscape_Map")
             if st.session_state.processed_data:
-                project_data = {'df_brands': st.session_state.df_brands, 'df_attrs': st.session_state.df_attrs, 'passive_data': st.session_state.passive_data, 'accuracy': st.session_state.accuracy}
+                project_data = {
+                    'df_brands': st.session_state.df_brands, 
+                    'df_attrs': st.session_state.df_attrs, 
+                    'passive_data': st.session_state.passive_data, 
+                    'accuracy': st.session_state.accuracy,
+                    'landscape_avg_weight': getattr(st.session_state, 'landscape_avg_weight', 1.0)
+                }
                 buffer = io.BytesIO(); pickle.dump(project_data, buffer); buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
 
@@ -126,25 +144,9 @@ with tab1:
         passive_files = st.file_uploader("Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
         
         st.divider()
-        st.header("🎨 Layer Visibility")
-        col_base_1, col_base_2 = st.columns(2)
-        show_base_cols = col_base_1.checkbox("Base Columns", True, key="viz_base_cols")
-        show_base_rows = col_base_2.checkbox("Base Rows", True, key="viz_base_rows")
-        
-        passive_configs = []
-        if passive_files:
-            st.subheader("Passive Layers")
-            for p_file in passive_files:
-                with st.expander(f"⚙️ {p_file.name}"):
-                    p_name = st.text_input("Label", p_file.name, key=f"name_{p_file.name}")
-                    p_show = st.checkbox("Show Layer", True, key=f"show_{p_file.name}")
-                    p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{p_file.name}")
-                    passive_configs.append({"file": p_file, "name": p_name, "show": p_show, "mode": p_mode})
-        
-        st.divider()
         st.header("🏷️ Label Manager")
         lbl_cols = st.checkbox("Show Column Labels", True)
-        lbl_rows = st.checkbox("Show Row Labels", True)
+        lbl_rows = st.checkbox("Show Row Labels", False)
         lbl_passive = st.checkbox("Show Passive Labels", True)
 
         st.divider()
@@ -161,6 +163,7 @@ with tab1:
         st.header("🔍 Filter & Highlight")
         placeholder_filters = st.empty()
 
+    # --- PROCESSING ---
     if uploaded_file is not None:
         try:
             df_raw = load_file(uploaded_file)
@@ -176,6 +179,7 @@ with tab1:
                 row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
                 col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
                 
+                # Save to session state
                 st.session_state.df_brands = pd.DataFrame(col_coords[:, :2], columns=['x', 'y'])
                 st.session_state.df_brands['Label'] = df_math.columns
                 
@@ -183,12 +187,11 @@ with tab1:
                 st.session_state.df_attrs['Label'] = df_math.index
                 st.session_state.df_attrs['Weight'] = df_math.sum(axis=1).values 
 
-                st.session_state.processed_data = True
-                st.session_state.df_brands = df_brands
-                st.session_state.df_attrs = df_attrs
                 st.session_state.accuracy = map_accuracy
                 st.session_state.landscape_avg_weight = df_math.sum(axis=1).mean()
+                st.session_state.processed_data = True
 
+                # Process Passive Layers
                 passive_layer_data = []
                 for cfg in passive_configs:
                     try:
@@ -221,7 +224,9 @@ with tab1:
                 st.session_state.passive_data = passive_layer_data
         except Exception as e: st.error(f"Error: {e}")
 
+    # --- RENDER ---
     if st.session_state.processed_data:
+        # Define local variables from session state to prevent NameError
         df_brands = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_attrs = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
         passive_layer_data = [rotate_coords(l.copy(), map_rotation) for l in st.session_state.passive_data]
@@ -235,8 +240,11 @@ with tab1:
             df_brands['Cluster'] = kmeans.predict(df_brands[['x', 'y']])
             
             for i in range(num_clusters):
+                # Core active signals
                 c_actives = df_attrs[df_attrs['Cluster'] == i].copy()
                 c_actives['dist'] = np.sqrt((c_actives['x'] - centroids[i][0])**2 + (c_actives['y'] - centroids[i][1])**2)
+                
+                # Integrated passive signals
                 c_passives_list = []
                 for layer in passive_layer_data:
                     l_check = layer.copy()
@@ -246,18 +254,25 @@ with tab1:
                         p_match['dist'] = np.sqrt((p_match['x'] - centroids[i][0])**2 + (p_match['y'] - centroids[i][1])**2)
                         c_passives_list.append(p_match)
                 
+                # Unified Pool (Active + Passive)
                 if c_passives_list:
                     c_all_signals = pd.concat([c_actives[['Label', 'Weight', 'dist']] , pd.concat(c_passives_list)[['Label', 'Weight', 'dist']]])
                 else:
                     c_all_signals = c_actives[['Label', 'Weight', 'dist']]
                 
                 sorted_all = c_all_signals.sort_values('dist').drop_duplicates(subset=['Label'])
+                
+                # REACH CALIBRATION (Average of top 5 signals)
                 reach_proxy = sorted_all.head(5)['Weight'].mean()
-                reach_share = (reach_proxy / st.session_state.landscape_avg_weight) * 25
+                # Denominator safety check
+                avg_weight = getattr(st.session_state, 'landscape_avg_weight', 1.0)
+                if avg_weight == 0: avg_weight = 1.0
+                
+                reach_share = (reach_proxy / avg_weight) * 25
                 
                 mindset_report.append({
                     "id": i+1, "color": cluster_colors[i % len(cluster_colors)], 
-                    "rows": sorted_all['Label'].tolist()[:10], 
+                    "rows": sorted_all['Label'].tolist()[:10], # Unified Top 10 signals
                     "brands": df_brands[df_brands['Cluster'] == i]['Label'].tolist(),
                     "size": reach_share, "threshold": 3 if reach_share > 10 else 2
                 })
@@ -266,60 +281,88 @@ with tab1:
 
         with placeholder_filters.container():
             st.metric("Landscape Stability", f"{st.session_state.accuracy:.1f}%")
+            if st.session_state.accuracy < 60: st.warning("⚠️ Low Stability Map")
             st.divider()
-            focus_brand = st.selectbox("Highlight Column:", ["None"] + sorted(df_brands['Label'].tolist()))
+            all_b_labels = sorted(df_brands['Label'].tolist())
+            focus_brand = st.selectbox("Highlight Column:", ["None"] + all_b_labels)
             with st.expander("Filter Base Map"):
-                sel_brands = st.multiselect("Columns:", sorted(df_brands['Label'].tolist()), default=df_brands['Label'].tolist()) if not st.checkbox("All Columns", True) else df_brands['Label'].tolist()
-                sel_attrs = st.multiselect("Rows:", sorted(df_attrs['Label'].tolist()), default=df_attrs.sort_values('Weight', ascending=False).head(15)['Label'].tolist()) if not st.checkbox("All Rows", True) else df_attrs['Label'].tolist()
+                sel_brands = st.multiselect("Columns:", all_b_labels, default=all_b_labels) if not st.checkbox("All Columns", True) else all_b_labels
+                all_a_labels = sorted(df_attrs['Label'].tolist())
+                sel_attrs = st.multiselect("Rows:", all_a_labels, default=all_a_labels[:10]) if not st.checkbox("All Rows", True) else all_a_labels
+            for i, layer in enumerate(passive_layer_data):
+                if not layer.empty and layer['Visible'].iloc[0]:
+                    with st.expander(f"Filter {layer['LayerName'].iloc[0]}"):
+                        l_labels = sorted(layer['Label'].tolist())
+                        if not st.checkbox("All Items", True, key=f"f_all_{i}"):
+                            passive_layer_data[i] = layer[layer['Label'].isin(st.multiselect("Select:", l_labels, default=l_labels, key=f"f_sel_{i}"))]
         st.session_state.mindset_report = mindset_report
 
+        # --- PLOTTING ---
         fig = go.Figure()
-        
-        # Brands
+        hl = []
+        if focus_brand != "None":
+            hero = df_brands[df_brands['Label'] == focus_brand].iloc[0]
+            hx, hy = hero['x'], hero['y']
+            active_attrs = df_attrs[df_attrs['Label'].isin(sel_attrs)].copy()
+            active_attrs['D'] = np.sqrt((active_attrs['x']-hx)**2 + (active_attrs['y']-hy)**2)
+            hl += active_attrs.sort_values('D').head(5)['Label'].tolist()
+            for layer in passive_layer_data:
+                if not layer.empty and layer['Visible'].iloc[0]:
+                    l_copy = layer.copy(); l_copy['D'] = np.sqrt((l_copy['x']-hx)**2 + (l_copy['y']-hy)**2)
+                    hl += l_copy.sort_values('D').head(5)['Label'].tolist()
+
+        def get_so(lbl, base_c):
+            if focus_brand == "None": return base_c, 0.9
+            if lbl == focus_brand or lbl in hl: return base_c, 1.0
+            return '#d3d3d3', 0.2
+
         if show_base_cols:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
+            res = [get_so(r['Label'], '#1f77b4') for _, r in plot_b.iterrows()]
             fig.add_trace(go.Scatter(
                 x=plot_b['x'], y=plot_b['y'], 
                 mode='markers+text' if lbl_cols else 'markers',
                 text=plot_b['Label'], textposition="top center",
-                marker=dict(size=10, color='#1f77b4', line=dict(width=1, color='white')),
-                name='Brands'
+                marker=dict(size=10, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')),
+                name='Columns'
             ))
 
-        # Mindsets
         if show_base_rows:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             if enable_clustering:
                 for cid in sorted(plot_a['Cluster'].unique()):
                     sub = plot_a[plot_a['Cluster'] == cid]; bc = cluster_colors[cid % len(cluster_colors)]
+                    res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
                     fig.add_trace(go.Scatter(
                         x=sub['x'], y=sub['y'], 
                         mode='markers+text' if lbl_rows else 'markers',
                         text=sub['Label'], textposition="top center",
-                        marker=dict(size=7, color=bc, opacity=0.7),
+                        marker=dict(size=7, color=[r[0] for r in res], opacity=[r[1] for r in res]),
                         name=f"Mindset {cid+1}"
                     ))
             else:
+                res = [get_so(r['Label'], '#d62728') for _, r in plot_a.iterrows()]
                 fig.add_trace(go.Scatter(
                     x=plot_a['x'], y=plot_a['y'], 
                     mode='markers+text' if lbl_rows else 'markers',
                     text=plot_a['Label'], textposition="top center",
-                    marker=dict(size=7, color='#d62728', opacity=0.75),
+                    marker=dict(size=7, color=[r[0] for r in res], opacity=[r[1] for r in res]),
                     name='Base Rows'
                 ))
 
-        # Passives
-        for layer in passive_layer_data:
+        for i, layer in enumerate(passive_layer_data):
             if not layer.empty and layer['Visible'].iloc[0]:
+                bc = cluster_colors[i % len(cluster_colors)] if not enable_clustering else cluster_colors[layer['Cluster'].iloc[0] % len(cluster_colors)]
+                res = [get_so(r['Label'], bc) for _, r in layer.iterrows()]
                 fig.add_trace(go.Scatter(
                     x=layer['x'], y=layer['y'], 
                     mode='markers+text' if lbl_passive else 'markers',
                     text=layer['Label'], textposition="top center",
-                    marker=dict(size=8, symbol='diamond-open', color='#333'),
+                    marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')),
                     name=layer['LayerName'].iloc[0]
                 ))
 
-        fig.update_layout(title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center'}, template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
+        fig.update_layout(title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center', 'font': {'family': 'Nunito', 'size': 20}}, template="plotly_white", height=850, xaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
 
         if enable_clustering and mindset_report:
