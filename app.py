@@ -286,9 +286,18 @@ with tab1:
         st.session_state.mindset_report = mindset_report
 
         with placeholder_filters.container():
-            st.metric("Landscape Stability", f"{st.session_state.accuracy:.1f}%")
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.metric("Landscape Stability", f"{st.session_state.accuracy:.1f}%")
+            with col2:
+                # --- NEW VISUAL FILTER ---
+                view_options = ["Show All"] + [f"Mindset {t['id']}" for t in mindset_report]
+                view_mode = st.selectbox("👁️ View Focus:", view_options)
+            
             st.divider()
-            focus_brand = st.selectbox("Highlight Column:", ["None"] + sorted(df_brands['Label'].tolist()))
+            all_b_labels = sorted(df_brands['Label'].tolist())
+            focus_brand = st.selectbox("Highlight Column:", ["None"] + all_b_labels)
+            
             with st.expander("Filter Base Map"):
                 sel_brands = st.multiselect("Columns:", sorted(df_brands['Label'].tolist()), default=df_brands['Label'].tolist()) if not st.checkbox("All Columns", True) else df_brands['Label'].tolist()
                 sel_attrs = st.multiselect("Rows:", sorted(df_attrs['Label'].tolist()), default=df_attrs.sort_values('Weight', ascending=False).head(15)['Label'].tolist()) if not st.checkbox("All Rows", True) else df_attrs['Label'].tolist()
@@ -317,7 +326,7 @@ with tab1:
             if lbl == focus_brand or lbl in hl: return base_c, 1.0
             return '#d3d3d3', 0.2
 
-        # Brands
+        # Brands (Always visible, filtered by selection)
         if show_base_cols:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
             res = [get_so(r['Label'], '#1f77b4') for _, r in plot_b.iterrows()]
@@ -331,11 +340,15 @@ with tab1:
                     c, o = get_so(r['Label'], '#1f77b4')
                     if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
 
-        # Mindsets (Active Rows)
+        # Mindsets (Filtered by View Mode)
         if show_base_rows:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             if enable_clustering:
                 for cid in sorted(plot_a['Cluster'].unique()):
+                    # VIEW FILTER: Skip if not "Show All" and not the selected mindset
+                    if view_mode != "Show All" and view_mode != f"Mindset {cid+1}":
+                        continue
+                        
                     sub = plot_a[plot_a['Cluster'] == cid]; bc = cluster_colors[cid % len(cluster_colors)]
                     res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
                     fig.add_trace(go.Scatter(
@@ -359,44 +372,48 @@ with tab1:
                         c, o = get_so(r['Label'], '#d62728')
                         if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
 
-        # Passives (Colored by Cluster)
+        # Passives (Filtered by View Mode via Cluster ID)
         for i, layer in enumerate(passive_layer_data):
             if not layer.empty and layer['Visible'].iloc[0]:
                 
                 # Assign colors point-by-point based on the Unified Cluster ID
                 p_colors = []
                 p_opacities = []
+                p_visible_indices = []
                 
-                for _, r in layer.iterrows():
-                    # Get base color from the Cluster ID
-                    if enable_clustering and 'Cluster' in layer.columns:
-                        cid = int(r['Cluster'])
-                        base_c = cluster_colors[cid % len(cluster_colors)]
-                    else:
-                        base_c = cluster_colors[i % len(cluster_colors)]
+                for idx, r in layer.iterrows():
+                    cid = int(r['Cluster']) if enable_clustering and 'Cluster' in layer.columns else i
                     
+                    # VIEW FILTER: Skip individual dot if it doesn't match the selected mindset
+                    if view_mode != "Show All" and view_mode != f"Mindset {cid+1}":
+                        continue
+                    
+                    p_visible_indices.append(idx)
+                    
+                    base_c = cluster_colors[cid % len(cluster_colors)]
                     c, o = get_so(r['Label'], base_c)
                     p_colors.append(c)
                     p_opacities.append(o)
 
-                fig.add_trace(go.Scatter(
-                    x=layer['x'], y=layer['y'], mode='markers',
-                    marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=p_colors, opacity=p_opacities, line=dict(width=1, color='white')),
-                    text=layer['Label'], hoverinfo='text', name=layer['LayerName'].iloc[0]
-                ))
-                
-                if lbl_passive:
-                    for idx, r in layer.iterrows():
-                        # Retrieve the specific color calculated for this point
-                        color_for_text = p_colors[idx] if idx < len(p_colors) else '#333'
-                        opacity_for_text = p_opacities[idx] if idx < len(p_opacities) else 1.0
-                        
-                        if opacity_for_text > 0.4:
-                            fig.add_annotation(
-                                x=r['x'], y=r['y'], text=r['Label'],
-                                showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=color_for_text,
-                                ax=0, ay=-15, font=dict(color=color_for_text, size=10)
-                            )
+                if p_visible_indices:
+                    visible_layer = layer.loc[p_visible_indices]
+                    fig.add_trace(go.Scatter(
+                        x=visible_layer['x'], y=visible_layer['y'], mode='markers',
+                        marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=p_colors, opacity=p_opacities, line=dict(width=1, color='white')),
+                        text=visible_layer['Label'], hoverinfo='text', name=layer['LayerName'].iloc[0]
+                    ))
+                    
+                    if lbl_passive:
+                        for j, (idx, r) in enumerate(visible_layer.iterrows()):
+                            color_for_text = p_colors[j]
+                            opacity_for_text = p_opacities[j]
+                            
+                            if opacity_for_text > 0.4:
+                                fig.add_annotation(
+                                    x=r['x'], y=r['y'], text=r['Label'],
+                                    showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=color_for_text,
+                                    ax=0, ay=-15, font=dict(color=color_for_text, size=10)
+                                )
 
         fig.update_layout(title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center', 'font': {'family': 'Nunito', 'size': 20}}, template="plotly_white", height=850, xaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis=dict(showgrid=False, showticklabels=False, zeroline=True), yaxis_scaleanchor="x", yaxis_scaleratio=1, dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
