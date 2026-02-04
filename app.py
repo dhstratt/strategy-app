@@ -8,8 +8,12 @@ import io
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Universal Strategy Engine")
 
+# --- SESSION STATE INITIALIZATION ---
+if 'processed_data' not in st.session_state:
+    st.session_state.processed_data = False
+
 # --- TABS ---
-tab1, tab2 = st.tabs(["🧠 The Strategy Engine", "🧹 MRI Data Cleaner"])
+tab1, tab2, tab3 = st.tabs(["🧠 The Strategy Engine", "📝 Interpretation", "🧹 MRI Data Cleaner"])
 
 # ==========================================
 # TAB 1: THE STRATEGY ENGINE
@@ -49,10 +53,6 @@ with tab1:
             df_math = df_math.loc[(df_math != 0).any(axis=1)] 
             df_math = df_math.loc[:, (df_math != 0).any(axis=0)]
             
-            if df_math.empty:
-                st.error("Error: All data was filtered out. Check if your file only contains 'Study Universe' or empty data.")
-                st.stop()
-
             # SVD
             N = df_math.values
             P = N / N.sum()
@@ -111,6 +111,13 @@ with tab1:
                         res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
                         passive_layer_data.append(res)
                     except: pass
+            
+            # --- SAVE STATE FOR TAB 2 ---
+            st.session_state.processed_data = True
+            st.session_state.df_brands = df_brands
+            st.session_state.df_attrs = df_attrs
+            st.session_state.passive_data = passive_layer_data
+            st.session_state.accuracy = map_accuracy
 
             # --- CONTROLS ---
             with st.sidebar:
@@ -124,7 +131,6 @@ with tab1:
                 focus_brand = st.selectbox("Highlight a Brand Story:", ["None"] + all_brand_labels)
                 st.markdown("---")
 
-                # Core Controls
                 with st.expander("🔹 Core Brands", expanded=False):
                     if not st.checkbox("Show All Brands", value=True):
                         sel_brands = st.multiselect("Filter:", all_brand_labels, default=all_brand_labels)
@@ -137,26 +143,19 @@ with tab1:
                         sel_attrs = st.multiselect("Filter:", all_a, default=top_15)
                     else: sel_attrs = df_attrs['Label'].tolist()
 
-                # Passive Controls
                 sel_passive_data = []
                 if passive_layer_data:
                     st.subheader("🔸 Passive Layers")
                     for layer in passive_layer_data:
                         lname = layer['LayerName'].iloc[0]
-                        # 1. MASTER TOGGLE
                         show_layer = st.checkbox(f"👁️ {lname}", value=True, key=f"vis_{lname}")
-                        
                         if show_layer:
-                            # 2. FILTER WITHIN LAYER
                             with st.expander(f"Filter {lname}", expanded=False):
                                 if not st.checkbox(f"Select All", value=True, key=f"all_{lname}"):
                                     all_l = sorted(layer['Label'].tolist())
                                     sel_l = st.multiselect("Filter Items:", all_l, default=all_l, key=f"mul_{lname}")
-                                else:
-                                    sel_l = layer['Label'].tolist()
-                                
-                                if sel_l:
-                                    sel_passive_data.append(layer[layer['Label'].isin(sel_l)])
+                                else: sel_l = layer['Label'].tolist()
+                                if sel_l: sel_passive_data.append(layer[layer['Label'].isin(sel_l)])
 
             # --- SPOTLIGHT LOGIC ---
             plot_brands = df_brands[df_brands['Label'].isin(sel_brands)]
@@ -186,7 +185,7 @@ with tab1:
                         else: return '#d3d3d3', 0.2
                 return color, opacity
 
-            # Core Brands
+            # Dots
             b_colors, b_opacities = [], []
             for _, row in plot_brands.iterrows():
                 c, o = get_style(row['Label'], is_brand=True)
@@ -198,7 +197,6 @@ with tab1:
                 hoverinfo='text', hovertext=plot_brands['Label']
             ))
 
-            # Core Attributes
             a_colors, a_opacities = [], []
             for _, row in plot_attrs.iterrows():
                 c, o = get_style(row['Label'], is_brand=False)
@@ -210,20 +208,18 @@ with tab1:
                 hoverinfo='text', hovertext=plot_attrs['Label']
             ))
 
-            # Passive Layers
             pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
             for i, layer in enumerate(sel_passive_data):
                 base_c = pass_colors[i % len(pass_colors)]
                 l_colors = [base_c if focus_brand == "None" else '#d3d3d3' for _ in range(len(layer))]
                 l_opacs = [0.9 if focus_brand == "None" else 0.2 for _ in range(len(layer))]
-                
                 fig.add_trace(go.Scatter(
                     x=layer['x'], y=layer['y'], mode='markers', name=layer['LayerName'].iloc[0],
                     marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=l_colors, opacity=l_opacs, line=dict(width=1, color='white')),
                     hoverinfo='text', hovertext=layer['Label']
                 ))
 
-            # Annotations
+            # Labels
             annotations = []
             for i, row in plot_brands.iterrows():
                 c, o = get_style(row['Label'], is_brand=True)
@@ -275,9 +271,71 @@ with tab1:
             st.error(f"Something went wrong: {e}")
 
 # ==========================================
-# TAB 2: DATA CLEANER
+# TAB 2: INTERPRETATION
 # ==========================================
 with tab2:
+    st.header("📝 Strategic Interpretation")
+    
+    if st.session_state.processed_data:
+        df_attrs = st.session_state.df_attrs
+        df_brands = st.session_state.df_brands
+        passive_layers = st.session_state.passive_data
+        
+        # 1. ANALYZE AXES
+        # We find the attribute with the max/min X and Y to define the axes
+        x_max = df_attrs.loc[df_attrs['x'].idxmax()]['Label']
+        x_min = df_attrs.loc[df_attrs['x'].idxmin()]['Label']
+        y_max = df_attrs.loc[df_attrs['y'].idxmax()]['Label']
+        y_min = df_attrs.loc[df_attrs['y'].idxmin()]['Label']
+        
+        st.subheader("1. The Core Conflicts")
+        st.markdown(f"""
+        The map is organized by two primary tensions in the market:
+        * **Horizontal Axis:** Runs from **"{x_min}"** (Left) to **"{x_max}"** (Right).
+        * **Vertical Axis:** Runs from **"{y_min}"** (Bottom) to **"{y_max}"** (Top).
+        
+        Brands located near these poles "own" that strategic territory.
+        """)
+        
+        st.divider()
+        
+        # 2. ANALYZE PASSIVE LAYERS
+        if passive_layers:
+            st.subheader("2. Passive Layer Analysis")
+            for layer in passive_layers:
+                name = layer['LayerName'].iloc[0]
+                st.markdown(f"#### Layer: {name}")
+                
+                # Find quadrant distribution
+                q1 = len(layer[(layer['x'] > 0) & (layer['y'] > 0)])
+                q2 = len(layer[(layer['x'] < 0) & (layer['y'] > 0)])
+                q3 = len(layer[(layer['x'] < 0) & (layer['y'] < 0)])
+                q4 = len(layer[(layer['x'] > 0) & (layer['y'] < 0)])
+                
+                # Determine dominant quadrant
+                quads = {'Top-Right (Q1)': q1, 'Top-Left (Q2)': q2, 'Bottom-Left (Q3)': q3, 'Bottom-Right (Q4)': q4}
+                dom_quad = max(quads, key=quads.get)
+                
+                st.write(f"- **Distribution:** Most items in this layer ({quads[dom_quad]} items) fall into the **{dom_quad}**.")
+                
+                # Find closest brand for the top item
+                top_item = layer.sort_values('Distinctiveness', ascending=False).iloc[0]
+                # Calculate distance to all brands
+                df_brands['Dist'] = np.sqrt((df_brands['x'] - top_item['x'])**2 + (df_brands['y'] - top_item['y'])**2)
+                closest_brand = df_brands.sort_values('Dist').iloc[0]['Label']
+                
+                st.write(f"- **Key Item:** *'{top_item['Label']}'* is the most distinct item in this layer. It is strategically closest to **{closest_brand}**.")
+                st.markdown("---")
+        else:
+            st.info("No passive layers uploaded yet. Upload a file in the sidebar to see analysis here.")
+            
+    else:
+        st.warning("👈 Please upload and process data in 'The Strategy Engine' tab first.")
+
+# ==========================================
+# TAB 3: DATA CLEANER
+# ==========================================
+with tab3:
     st.header("🧹 MRI Data Cleaner")
     st.markdown("Upload a raw MRI Crosstab (CSV, XLSX, XLS).")
     raw_mri = st.file_uploader("Upload Raw MRI", type=["csv", "xlsx", "xls"])
@@ -307,7 +365,6 @@ with tab2:
                 df_clean['Attitude'] = df_clean['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
                 df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
                 df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
-                
                 st.success("Cleaned!")
                 st.download_button("Download CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
             else: st.error("Could not find 'Weighted (000)' row.")
