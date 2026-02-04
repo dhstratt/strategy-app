@@ -55,6 +55,7 @@ with tab1:
     col_nav, col_main = st.columns([1, 4])
     
     with st.sidebar:
+        # 1. PROJECT MANAGER
         st.header("💾 Project Manager")
         with st.expander("📂 Load Project", expanded=False):
             uploaded_project = st.file_uploader("Upload .use file", type=["use"], key="loader")
@@ -70,7 +71,7 @@ with tab1:
                     st.rerun()
                 except: st.error("Invalid Project File")
 
-        with st.expander("💾 Save Project", expanded=True):
+        with st.expander("💾 Save Project", expanded=False):
             proj_name = st.text_input("Project Name", "My_Landscape_Map")
             if st.session_state.processed_data:
                 project_data = {
@@ -86,27 +87,51 @@ with tab1:
             else: st.info("Upload data to save.")
 
         st.divider()
+        
+        # 2. DATA IMPORT
         st.header("📂 Data Import")
         uploaded_file = st.file_uploader("1. Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
-        
-        # Passive Files
         passive_files = st.file_uploader("2. Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
-        
-        # PASSIVE LAYER CONFIGURATION (DYNAMIC)
-        passive_configs = {}
-        if passive_files:
-            st.subheader("⚙️ Passive Settings")
-            for p_file in passive_files:
-                with st.expander(f"Settings: {p_file.name}", expanded=True):
-                    # Default to Auto, but allow override
-                    mode = st.radio(
-                        "Map items as:", 
-                        ["Auto (Detect)", "Statements (Stars)", "Brands (Diamonds)"],
-                        key=f"mode_{p_file.name}"
-                    )
-                    passive_configs[p_file.name] = mode
-
         st.divider()
+
+        # 3. LAYER MANAGER (NEW)
+        st.header("🎨 Layer Manager")
+        
+        # A. Base Map Config
+        st.subheader("Base Map")
+        show_base = st.checkbox("Show Base Map", value=True, key="show_base")
+        
+        base_configs = {"brands": True, "attrs": True, "sel_brands": [], "sel_attrs": []}
+        
+        if show_base:
+            c1, c2 = st.columns(2)
+            base_configs["brands"] = c1.checkbox("Brands", True)
+            base_configs["attrs"] = c2.checkbox("Statements", True)
+            
+            # Filters are populated after data load, but we create placeholders here
+            # Logic handled below in "Render" section to ensure data exists
+        
+        # B. Passive Configs
+        passive_configs = []
+        if passive_files:
+            st.subheader("Passive Layers")
+            for p_file in passive_files:
+                with st.expander(f"{p_file.name}", expanded=False):
+                    # Label
+                    new_name = st.text_input("Layer Label", p_file.name, key=f"lbl_{p_file.name}")
+                    
+                    # Visibility
+                    is_visible = st.checkbox("Visible", value=True, key=f"vis_{p_file.name}")
+                    
+                    # Mode
+                    mode = st.radio("Map as:", ["Auto", "Statements (Stars)", "Brands (Diamonds)"], key=f"mode_{p_file.name}")
+                    
+                    passive_configs.append({
+                        "file": p_file,
+                        "name": new_name,
+                        "visible": is_visible,
+                        "mode": mode
+                    })
 
     # --- PROCESS DATA ---
     if uploaded_file is not None:
@@ -148,61 +173,55 @@ with tab1:
                 st.session_state.df_attrs = df_attrs
                 st.session_state.accuracy = map_accuracy
 
-                # Process Passive Layers with User Config
+                # Process Passive Layers
                 passive_layer_data = []
-                if passive_files:
-                    for p_file in passive_files:
-                        try:
-                            p_raw = load_file(p_file)
-                            p_clean = clean_df(p_raw)
-                            common_brands = list(set(p_clean.columns) & set(df_math.columns))
-                            common_attrs = list(set(p_clean.index) & set(df_math.index))
-                            
-                            # DECISION LOGIC
-                            user_mode = passive_configs.get(p_file.name, "Auto (Detect)")
-                            
-                            is_row_projection = False
-                            
-                            if user_mode == "Statements (Stars)":
-                                is_row_projection = True
-                            elif user_mode == "Brands (Diamonds)":
-                                is_row_projection = False
-                            else:
-                                # Auto Heuristic: If more matching brands than attributes, assumes we want to map rows (attributes)
-                                if len(common_brands) > len(common_attrs):
-                                    is_row_projection = True
-                                else:
-                                    is_row_projection = False
-                            
-                            if is_row_projection:
-                                # Project ROWS (Stars) - using Brands as anchors
-                                if len(common_brands) > 0:
-                                    p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
-                                    p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
-                                    proj = p_prof.values @ col_coords[:, :2] / s[:2]
-                                    res = pd.DataFrame(proj, columns=['x', 'y'])
-                                    res['Label'] = p_aligned.index
-                                    res['Shape'] = 'star'
-                                    res['LayerName'] = p_file.name
-                                    res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
-                                    passive_layer_data.append(res)
-                            else:
-                                # Project COLS (Diamonds) - using Attributes as anchors
-                                if len(common_attrs) > 0:
-                                    p_aligned = p_clean.reindex(df_math.index).fillna(0)
-                                    p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
-                                    proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
-                                    res = pd.DataFrame(proj, columns=['x', 'y'])
-                                    res['Label'] = p_aligned.columns
-                                    res['Shape'] = 'diamond'
-                                    res['LayerName'] = p_file.name
-                                    res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
-                                    passive_layer_data.append(res)
-                                    
-                        except Exception as e:
-                            # st.error(f"Failed to process {p_file.name}: {e}") # Suppress to keep clean
-                            pass
-                            
+                for config in passive_configs:
+                    try:
+                        p_file = config["file"]
+                        p_raw = load_file(p_file)
+                        p_clean = clean_df(p_raw)
+                        common_brands = list(set(p_clean.columns) & set(df_math.columns))
+                        common_attrs = list(set(p_clean.index) & set(df_math.index))
+                        
+                        user_mode = config["mode"]
+                        is_row_projection = False
+                        
+                        if user_mode == "Statements (Stars)": is_row_projection = True
+                        elif user_mode == "Brands (Diamonds)": is_row_projection = False
+                        else:
+                            # Auto
+                            if len(common_brands) > len(common_attrs): is_row_projection = True
+                            else: is_row_projection = False
+                        
+                        if is_row_projection:
+                            # Project ROWS (Stars)
+                            if len(common_brands) > 0:
+                                p_aligned = p_clean[common_brands].reindex(columns=df_math.columns).fillna(0)
+                                p_prof = p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)
+                                proj = p_prof.values @ col_coords[:, :2] / s[:2]
+                                res = pd.DataFrame(proj, columns=['x', 'y'])
+                                res['Label'] = p_aligned.index
+                                res['Shape'] = 'star'
+                                res['LayerName'] = config["name"] # Use custom name
+                                res['Visible'] = config["visible"]
+                                res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
+                                passive_layer_data.append(res)
+                        else:
+                            # Project COLS (Diamonds)
+                            if len(common_attrs) > 0:
+                                p_aligned = p_clean.reindex(df_math.index).fillna(0)
+                                p_prof = p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)
+                                proj = p_prof.T.values @ row_coords[:, :2] / s[:2]
+                                res = pd.DataFrame(proj, columns=['x', 'y'])
+                                res['Label'] = p_aligned.columns
+                                res['Shape'] = 'diamond'
+                                res['LayerName'] = config["name"] # Use custom name
+                                res['Visible'] = config["visible"]
+                                res['Distinctiveness'] = np.sqrt(res['x']**2 + res['y']**2)
+                                passive_layer_data.append(res)
+                                
+                    except: pass
+                
                 st.session_state.passive_data = passive_layer_data
         except Exception as e: st.error(f"Error: {e}")
 
@@ -212,109 +231,107 @@ with tab1:
         df_attrs = st.session_state.df_attrs
         passive_layer_data = st.session_state.passive_data
         
-        # CONTROLS
+        # --- SIDEBAR FILTERS (Populated now that data exists) ---
         with st.sidebar:
-            st.header("🎯 Map Controls")
-            st.metric("Map Stability", f"{st.session_state.accuracy:.1f}%")
-            if st.session_state.accuracy < 60: st.error("⚠️ **Unstable Map:** Accuracy < 60%.")
-
-            st.markdown("---")
-            st.subheader("🔦 Brand Spotlight")
-            all_b = sorted(df_brands['Label'].tolist())
-            focus_brand = st.selectbox("Highlight:", ["None"] + all_b)
-            st.markdown("---")
-
-            # Core Filters
-            with st.expander("🔹 Core Brands", expanded=False):
-                if not st.checkbox("Show All Brands", value=True):
-                    sel_brands = st.multiselect("Filter:", all_b, default=all_b)
-                else: sel_brands = df_brands['Label'].tolist()
-
-            with st.expander("🔹 Core Statements", expanded=False):
-                if not st.checkbox("Show All Statements", value=False):
+            if show_base:
+                with st.expander("Filter Base Map", expanded=False):
+                    all_b = sorted(df_brands['Label'].tolist())
                     all_a = sorted(df_attrs['Label'].tolist())
-                    top_15 = df_attrs.sort_values('Distinctiveness', ascending=False).head(15)['Label'].tolist()
-                    sel_attrs = st.multiselect("Filter:", all_a, default=top_15)
-                else: sel_attrs = df_attrs['Label'].tolist()
+                    
+                    if not st.checkbox("All Brands", True):
+                        base_configs["sel_brands"] = st.multiselect("Brands:", all_b, default=all_b)
+                    else: base_configs["sel_brands"] = all_b
+                    
+                    if not st.checkbox("All Statements", False):
+                        top_15 = df_attrs.sort_values('Distinctiveness', ascending=False).head(15)['Label'].tolist()
+                        base_configs["sel_attrs"] = st.multiselect("Statements:", all_a, default=top_15)
+                    else: base_configs["sel_attrs"] = all_a
+            
+            # Additional Passive Filters
+            for i, layer in enumerate(passive_layer_data):
+                if layer['Visible'].iloc[0]:
+                    with st.expander(f"Filter {layer['LayerName'].iloc[0]}", expanded=False):
+                         all_l = sorted(layer['Label'].tolist())
+                         if not st.checkbox("All", True, key=f"all_l_{i}"):
+                             sel = st.multiselect("Items:", all_l, default=all_l, key=f"sel_l_{i}")
+                             # Update layer with selection
+                             passive_layer_data[i] = layer[layer['Label'].isin(sel)]
 
-            # Passive Filters
-            sel_passive_data = []
-            if passive_layer_data:
-                st.subheader("🔸 Passive Layers")
-                for layer in passive_layer_data:
-                    lname = layer['LayerName'].iloc[0]
-                    if st.checkbox(f"👁️ {lname}", value=True, key=lname):
-                        with st.expander(f"Filter {lname}", expanded=False):
-                            if not st.checkbox(f"Select All", value=True, key=f"all_{lname}"):
-                                all_l = sorted(layer['Label'].tolist())
-                                sel_l = st.multiselect("Filter Items:", all_l, default=all_l, key=f"mul_{lname}")
-                            else: sel_l = layer['Label'].tolist()
-                            if sel_l: sel_passive_data.append(layer[layer['Label'].isin(sel_l)])
+            st.divider()
+            st.metric("Map Stability", f"{st.session_state.accuracy:.1f}%")
+            if st.session_state.accuracy < 60: st.error("⚠️ Unstable Map")
+
+            # Spotlight
+            st.subheader("🔦 Brand Spotlight")
+            all_b_spot = sorted(df_brands['Label'].tolist())
+            focus_brand = st.selectbox("Highlight:", ["None"] + all_b_spot)
+
 
         # PLOT LOGIC
-        plot_brands = df_brands[df_brands['Label'].isin(sel_brands)]
-        plot_attrs = df_attrs[df_attrs['Label'].isin(sel_attrs)]
+        fig = go.Figure()
         
         hero_related = []
         if focus_brand != "None":
             hero = df_brands[df_brands['Label'] == focus_brand]
             if not hero.empty:
                 hx, hy = hero.iloc[0]['x'], hero.iloc[0]['y']
-                plot_attrs = plot_attrs.copy()
-                plot_attrs['Dist'] = np.sqrt((plot_attrs['x'] - hx)**2 + (plot_attrs['y'] - hy)**2)
-                hero_related = plot_attrs.sort_values('Dist').head(5)['Label'].tolist()
-
-        fig = go.Figure()
+                # Calculate distances for everything
+                hero_related = [] # Only highlight if close? 
+                # Actually, standard spotlight logic:
+                # Dim everything else.
 
         def get_style(lbl, is_brand=False):
             c = '#1f77b4' if is_brand else '#d62728'
             op = 1.0 if is_brand else 0.7
             if focus_brand != "None":
-                if is_brand: return (c, 1.0) if lbl == focus_brand else ('#d3d3d3', 0.2)
-                else: return (c, 1.0) if lbl in hero_related else ('#d3d3d3', 0.2)
+                if lbl == focus_brand: return (c, 1.0)
+                # Simple logic: Dim everything else
+                return ('#d3d3d3', 0.2)
             return c, op
 
-        # Brands
-        bc, bo = [], []
-        for _, r in plot_brands.iterrows():
-            c, o = get_style(r['Label'], True)
-            bc.append(c); bo.append(o)
-        fig.add_trace(go.Scatter(x=plot_brands['x'], y=plot_brands['y'], mode='markers', marker=dict(size=10, color=bc, opacity=bo, line=dict(width=1, color='white')), hovertext=plot_brands['Label'], name='Brands'))
+        # 1. CORE BRANDS
+        if show_base and base_configs["brands"]:
+            plot_brands = df_brands[df_brands['Label'].isin(base_configs["sel_brands"])]
+            bc, bo = [], []
+            for _, r in plot_brands.iterrows():
+                c, o = get_style(r['Label'], True)
+                bc.append(c); bo.append(o)
+            fig.add_trace(go.Scatter(x=plot_brands['x'], y=plot_brands['y'], mode='markers', marker=dict(size=10, color=bc, opacity=bo, line=dict(width=1, color='white')), hovertext=plot_brands['Label'], name='Brands'))
+            
+            # Annotations
+            for _, r in plot_brands.iterrows():
+                c, o = get_style(r['Label'], True)
+                if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
 
-        # Attributes
-        ac, ao = [], []
-        for _, r in plot_attrs.iterrows():
-            c, o = get_style(r['Label'], False)
-            ac.append(c); ao.append(o)
-        fig.add_trace(go.Scatter(x=plot_attrs['x'], y=plot_attrs['y'], mode='markers', marker=dict(size=7, color=ac, opacity=ao), hovertext=plot_attrs['Label'], name='Statements'))
+        # 2. CORE ATTRIBUTES
+        if show_base and base_configs["attrs"]:
+            plot_attrs = df_attrs[df_attrs['Label'].isin(base_configs["sel_attrs"])]
+            ac, ao = [], []
+            for _, r in plot_attrs.iterrows():
+                c, o = get_style(r['Label'], False)
+                ac.append(c); ao.append(o)
+            fig.add_trace(go.Scatter(x=plot_attrs['x'], y=plot_attrs['y'], mode='markers', marker=dict(size=7, color=ac, opacity=ao), hovertext=plot_attrs['Label'], name='Statements'))
 
-        # Passive
+            for _, r in plot_attrs.iterrows():
+                c, o = get_style(r['Label'], False)
+                if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c)
+
+        # 3. PASSIVE LAYERS
         pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
-        for i, layer in enumerate(sel_passive_data):
-            pc = pass_colors[i % len(pass_colors)]
-            lc = [pc if focus_brand == "None" else '#d3d3d3' for _ in range(len(layer))]
-            lo = [0.9 if focus_brand == "None" else 0.2 for _ in range(len(layer))]
-            fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=lc, opacity=lo, line=dict(width=1, color='white')), hovertext=layer['Label'], name=layer['LayerName'].iloc[0]))
-
-        # Annotations (Transparent)
-        anns = []
-        for _, r in plot_brands.iterrows():
-            c, o = get_style(r['Label'], True)
-            if o > 0.3: anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c))
-        
-        for _, r in plot_attrs.iterrows():
-            c, o = get_style(r['Label'], False)
-            if o > 0.3: anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=c, family="Nunito"), arrowcolor=c))
-
-        for i, layer in enumerate(sel_passive_data):
-            if focus_brand == "None":
+        for i, layer in enumerate(passive_layer_data):
+            if layer['Visible'].iloc[0]:
                 pc = pass_colors[i % len(pass_colors)]
-                for _, r in layer.iterrows():
-                    anns.append(dict(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=pc, family="Nunito"), arrowcolor=pc))
+                lc = [pc if focus_brand == "None" else '#d3d3d3' for _ in range(len(layer))]
+                lo = [0.9 if focus_brand == "None" else 0.2 for _ in range(len(layer))]
+                
+                fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=lc, opacity=lo, line=dict(width=1, color='white')), hovertext=layer['Label'], name=layer['LayerName'].iloc[0]))
+                
+                if focus_brand == "None":
+                    for _, r in layer.iterrows():
+                        fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(size=11, color=pc, family="Nunito"), arrowcolor=pc)
 
-        # Layout (Auto-Fit)
+        # Layout
         fig.update_layout(
-            annotations=anns,
             title={'text': "Strategic Map", 'y':0.95, 'x':0.5, 'xanchor':'center', 'font': {'family': 'Nunito', 'size': 20}},
             template="plotly_white", height=850,
             xaxis=dict(showgrid=False, showticklabels=False, zeroline=True),
