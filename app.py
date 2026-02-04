@@ -248,13 +248,27 @@ with tab1:
         df_attrs = st.session_state.df_attrs
         passive_layer_data = st.session_state.passive_data
         
-        # --- CLUSTERING LOGIC (ON THE FLY) ---
+        # --- CLUSTERING LOGIC ---
+        # We need to persist the model to apply it to passive layers
+        kmeans_model = None
+        cluster_colors = px.colors.qualitative.Bold
+        
         if enable_clustering and HAS_SKLEARN:
             try:
-                kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
-                df_attrs['Cluster'] = kmeans.fit_predict(df_attrs[['x', 'y']])
+                # 1. Fit on Base Rows (The "Ground Truth")
+                kmeans_model = KMeans(n_clusters=num_clusters, random_state=42, n_init=10)
+                df_attrs['Cluster'] = kmeans_model.fit_predict(df_attrs[['x', 'y']])
                 df_attrs['Cluster_Label'] = "Territory " + (df_attrs['Cluster'] + 1).astype(str)
-            except:
+                
+                # 2. Predict on Passive Layers (if they exist)
+                for i, layer in enumerate(passive_layer_data):
+                    if not layer.empty:
+                        # Predict which territory these new points fall into
+                        layer['Cluster'] = kmeans_model.predict(layer[['x', 'y']])
+                        passive_layer_data[i] = layer # Update the list
+                        
+            except Exception as e:
+                # Fallback if clustering fails
                 df_attrs['Cluster_Label'] = "Base Rows"
         else:
              df_attrs['Cluster_Label'] = "Base Rows"
@@ -319,7 +333,10 @@ with tab1:
             plot_b = df_brands[df_brands['Label'].isin(sel_brands)]
             c_list, o_list = [], []
             for _, r in plot_b.iterrows():
-                c, o = get_color_opacity(r['Label'], '#1f77b4') # Blue default
+                # Columns usually stay blue unless we want them clustered too.
+                # Standard convention: Brands are entities, Rows are the landscape.
+                # So we keep brands Blue (or highlight color).
+                c, o = get_color_opacity(r['Label'], '#1f77b4') 
                 c_list.append(c); o_list.append(o)
             
             fig.add_trace(go.Scatter(
@@ -331,16 +348,13 @@ with tab1:
                 c, o = get_color_opacity(r['Label'], '#1f77b4')
                 if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-20, font=dict(color=c, size=11), arrowcolor=c)
 
-        # 2. BASE ROWS (CLUSTERED OR DEFAULT)
+        # 2. BASE ROWS
         if show_base_rows:
             plot_a = df_attrs[df_attrs['Label'].isin(sel_attrs)]
             
             if enable_clustering and HAS_SKLEARN:
-                # Group by Cluster for Legend
+                # Render by Cluster
                 clusters = sorted(plot_a['Cluster'].unique())
-                # Safe Color Palette for Clusters
-                cluster_colors = px.colors.qualitative.Bold
-                
                 for c_id in clusters:
                     sub_df = plot_a[plot_a['Cluster'] == c_id]
                     base_c = cluster_colors[c_id % len(cluster_colors)]
@@ -355,17 +369,17 @@ with tab1:
                         marker=dict(size=7, color=c_list, opacity=o_list),
                         text=sub_df['Label'], hoverinfo='text', name=f"Territory {c_id+1}"
                     ))
-                    
+                    # Annotations loop for this cluster
                     for _, r in sub_df.iterrows():
-                        c, o = get_color_opacity(r['Label'], base_c)
-                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
+                         c, o = get_color_opacity(r['Label'], base_c)
+                         if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
+
             else:
-                # Standard Red Mode
+                # Standard Red
                 c_list, o_list = [], []
                 for _, r in plot_a.iterrows():
                     c, o = get_color_opacity(r['Label'], '#d62728')
                     c_list.append(c); o_list.append(o)
-                
                 fig.add_trace(go.Scatter(
                     x=plot_a['x'], y=plot_a['y'], mode='markers',
                     marker=dict(size=7, color=c_list, opacity=o_list),
@@ -376,23 +390,55 @@ with tab1:
                     if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
 
         # 3. PASSIVE LAYERS
-        pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b']
+        pass_colors = ['#2ca02c', '#ff7f0e', '#9467bd', '#8c564b'] # Fallback
+        
         for i, layer in enumerate(passive_layer_data):
             if not layer.empty and layer['Visible'].iloc[0]:
-                pc = pass_colors[i % len(pass_colors)]
-                c_list, o_list = [], []
-                for _, r in layer.iterrows():
-                    c, o = get_color_opacity(r['Label'], pc)
-                    c_list.append(c); o_list.append(o)
                 
-                fig.add_trace(go.Scatter(
-                    x=layer['x'], y=layer['y'], mode='markers',
-                    marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=c_list, opacity=o_list, line=dict(width=1, color='white')),
-                    text=layer['Label'], hoverinfo='text', name=layer['LayerName'].iloc[0]
-                ))
-                for _, r in layer.iterrows():
-                    c, o = get_color_opacity(r['Label'], pc)
-                    if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
+                # If Clustering ON, split this layer into cluster groups
+                if enable_clustering and HAS_SKLEARN and 'Cluster' in layer.columns:
+                    
+                    # We iterate through clusters found in THIS layer
+                    layer_clusters = sorted(layer['Cluster'].unique())
+                    for c_id in layer_clusters:
+                        sub_layer = layer[layer['Cluster'] == c_id]
+                        # Use same color as Base Rows for this cluster
+                        base_c = cluster_colors[c_id % len(cluster_colors)]
+                        
+                        c_list, o_list = [], []
+                        for _, r in sub_layer.iterrows():
+                            c, o = get_color_opacity(r['Label'], base_c)
+                            c_list.append(c); o_list.append(o)
+
+                        # Name: "Layer Name (T1)"
+                        fig.add_trace(go.Scatter(
+                            x=sub_layer['x'], y=sub_layer['y'], mode='markers',
+                            marker=dict(size=9, symbol=sub_layer['Shape'].iloc[0], color=c_list, opacity=o_list, line=dict(width=1, color='white')),
+                            text=sub_layer['Label'], hoverinfo='text', 
+                            name=f"{sub_layer['LayerName'].iloc[0]} (T{c_id+1})",
+                            showlegend=False # Cleaner to hide sub-legends, or keep if user wants detail
+                        ))
+                        
+                        for _, r in sub_layer.iterrows():
+                            c, o = get_color_opacity(r['Label'], base_c)
+                            if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
+
+                else:
+                    # Standard Layer Color
+                    pc = pass_colors[i % len(pass_colors)]
+                    c_list, o_list = [], []
+                    for _, r in layer.iterrows():
+                        c, o = get_color_opacity(r['Label'], pc)
+                        c_list.append(c); o_list.append(o)
+                    
+                    fig.add_trace(go.Scatter(
+                        x=layer['x'], y=layer['y'], mode='markers',
+                        marker=dict(size=9, symbol=layer['Shape'].iloc[0], color=c_list, opacity=o_list, line=dict(width=1, color='white')),
+                        text=layer['Label'], hoverinfo='text', name=layer['LayerName'].iloc[0]
+                    ))
+                    for _, r in layer.iterrows():
+                        c, o = get_color_opacity(r['Label'], pc)
+                        if o > 0.4: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], ax=0, ay=-15, font=dict(color=c, size=11), arrowcolor=c)
 
         # Layout
         fig.update_layout(
@@ -478,10 +524,7 @@ with tab3:
                 for c in data_cols:
                     df_clean[c] = pd.to_numeric(df_clean[c].astype(str).str.replace(',', ''), errors='coerce')
                 
-                # Drop rows where ALL data columns are NaN
                 df_clean = df_clean.dropna(subset=data_cols, how='all')
-                
-                # Drop rows where SUM of data is 0 (or NaN treated as 0)
                 df_clean = df_clean[df_clean[data_cols].fillna(0).sum(axis=1) > 0]
 
                 # Filter Tags
