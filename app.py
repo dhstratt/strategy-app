@@ -242,7 +242,7 @@ with tab1:
                 c_actives = df_attrs[df_attrs['Cluster'] == i].copy()
                 c_actives['dist'] = np.sqrt((c_actives['x'] - centroids[i][0])**2 + (c_actives['y'] - centroids[i][1])**2)
                 
-                # Integrated passive signals
+                # Full integration of passive layers into this cluster
                 c_passives_list = []
                 for layer in passive_layer_data:
                     l_check = layer.copy()
@@ -252,7 +252,7 @@ with tab1:
                         p_match['dist'] = np.sqrt((p_match['x'] - centroids[i][0])**2 + (p_match['y'] - centroids[i][1])**2)
                         c_passives_list.append(p_match)
                 
-                # Full signal pool
+                # Combine ALL signals for sizing and logic
                 if c_passives_list:
                     c_all_signals = pd.concat([c_actives[['Label', 'Weight', 'dist']] , pd.concat(c_passives_list)[['Label', 'Weight', 'dist']]])
                 else:
@@ -260,13 +260,13 @@ with tab1:
                 
                 sorted_all = c_all_signals.sort_values('dist').drop_duplicates(subset=['Label'])
                 
-                # NEW SIZING Logic (Reach Calibrated)
+                # SIZING: Reach Proxy (Avg of top 5 signals across layers)
                 reach_proxy = sorted_all.head(5)['Weight'].mean()
                 reach_share = (reach_proxy / st.session_state.landscape_avg_weight) * 25
                 
                 mindset_report.append({
                     "id": i+1, "color": cluster_colors[i % len(cluster_colors)], 
-                    "rows": sorted_all['Label'].tolist()[:10], 
+                    "rows": sorted_all['Label'].tolist()[:10], # Unified Top 10 signals
                     "brands": df_brands[df_brands['Cluster'] == i]['Label'].tolist(),
                     "size": reach_share, "threshold": 3 if reach_share > 10 else 2
                 })
@@ -350,7 +350,7 @@ with tab1:
                     """, unsafe_allow_html=True)
 
 # ==========================================
-# TAB 2: AI CHAT (PRESERVED)
+# TAB 2: AI CHAT
 # ==========================================
 with tab2:
     st.header("💬 AI Landscape Chat")
@@ -373,7 +373,7 @@ with tab2:
             with st.chat_message("assistant"): st.markdown(r)
 
 # ==========================================
-# TAB 3: CLEANER (PRESERVED)
+# TAB 3: CLEANER
 # ==========================================
 with tab3:
     st.header("🧹 MRI Data Cleaner")
@@ -394,20 +394,25 @@ with tab3:
             for c in df_clean.columns[1:]: df_clean[c] = pd.to_numeric(df_clean[c].astype(str).str.replace(',', ''), errors='coerce')
             df_clean = df_clean.dropna(subset=df_clean.columns[1:], how='all')
             df_clean = df_clean[df_clean[df_clean.columns[1:]].fillna(0).sum(axis=1) > 0]
+            df_clean = df_clean[df_clean['Attitude'].str.len() > 3]
+            df_clean = df_clean[~df_clean['Attitude'].astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
             st.success("Cleaned!"); st.download_button("Download CSV", df_clean.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv", "text/csv")
         except: st.error("Invalid MRI format.")
 
 # ==========================================
-# TAB 4:📟 COUNT CODE MAKER (NEW)
+# TAB 4: 📟 COUNT CODE MAKER
 # ==========================================
 with tab4:
     st.header("📟 Count Code Maker")
-    st.markdown("Integrated targeting formula using the top signals from **Active** and **Passive** layers.")
-    if not st.session_state.processed_data or not st.session_state.mindset_report:
+    st.markdown("Automated targeting optimized for unique reach across all map signals.")
+    if not st.session_state.mindset_report:
         st.warning("⚠️ Turn on Mindset Discovery to generate targets.")
     else:
         for t in st.session_state.mindset_report:
-            with st.expander(f"Mindset {t['id']} Targeting Formula (Est. {t['size']:.1f}% Reach)", expanded=True):
-                mri_code = "(" + " + ".join([f"[{r}]" for r in t['rows']]) + f") >= {t['threshold']}"
+            with st.expander(f"Mindset {t['id']} Unified Target (Est. {t['size']:.1f}% Reach)", expanded=True):
+                rows = t['rows']
+                threshold = t['threshold']
+                mri_code = "(" + " + ".join([f"[{r}]" for r in rows]) + f") >= {threshold}"
+                st.markdown('<div class="logic-tag">MRI-SIMMONS TARGET CODE</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="code-block">{mri_code}</div>', unsafe_allow_html=True)
-                st.markdown(f"**Strategy:** This formula isolates the top signals across all datasets to match the identified psychological footprint.")
+                st.info(f"Targets the top signals from all layers. calibrated for a high-signal {t['size']:.1f}% audience.")
