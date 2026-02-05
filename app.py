@@ -30,6 +30,8 @@ st.markdown("""
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
+        /* Sidebar metric styling */
+        [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -72,12 +74,80 @@ def normalize_strings(s_index):
     return s_index.astype(str).str.strip().str.lower()
 
 # ==========================================
+# DATA PROCESSING ENGINE (RUNS FIRST)
+# ==========================================
+# We define the processing logic here so we can populate the sidebar immediately after
+def process_data(uploaded_file, passive_files, passive_configs):
+    try:
+        raw_data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+        df_math_ready = clean_df(raw_data, is_core=True)
+        df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
+        if not df_math.empty:
+            N = df_math.values; matrix_sum = N.sum()
+            if matrix_sum == 0: return
+            P = N / matrix_sum; r = P.sum(axis=1); c = P.sum(axis=0); E = np.outer(r,c)
+            E[E < 1e-9] = 1e-9; R = (P - E) / np.sqrt(E); U, s, Vh = np.linalg.svd(R, full_matrices=False)
+            row_coords = (U * s) / np.sqrt(r[:, np.newaxis]); col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
+            
+            st.session_state.df_brands = pd.DataFrame(col_coords[:, :2], columns=['x','y']); st.session_state.df_brands['Label'] = df_math.columns
+            st.session_state.df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x','y']); st.session_state.df_attrs['Label'] = df_math.index
+            st.session_state.df_attrs['Weight'] = df_math.sum(axis=1).values 
+            
+            eig_vals = np.array(s)**2
+            total_var = np.sum(eig_vals)
+            st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
+            st.session_state.processed_data = True
+
+            # Process Passives
+            pass_list = []
+            for cfg in passive_configs:
+                pf = cfg['file']
+                p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
+                p_c = clean_df(p_raw, is_core=False)
+                
+                p_cols_norm = normalize_strings(p_c.columns); core_cols_norm = normalize_strings(df_math.columns)
+                common_b_indices = [i for i, x in enumerate(p_cols_norm) if x in list(core_cols_norm)]
+                
+                p_idx_norm = normalize_strings(p_c.index); core_idx_norm = normalize_strings(df_math.index)
+                common_r_indices = [i for i, x in enumerate(p_idx_norm) if x in list(core_idx_norm)]
+                
+                is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else len(common_b_indices) > len(common_r_indices)
+                proj = np.array([]); p_aligned = pd.DataFrame()
+                
+                if is_rows and common_b_indices:
+                    valid_cols = p_c.columns[common_b_indices]
+                    mapper = {x: i for i, x in enumerate(core_cols_norm)}
+                    p_aligned = pd.DataFrame(0, index=p_c.index, columns=df_math.columns)
+                    for c in valid_cols:
+                        nm = c.strip().lower()
+                        if nm in mapper: p_aligned[df_math.columns[mapper[nm]]] = p_c[c]
+                    proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
+                    res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
+                elif not is_rows and common_r_indices:
+                    valid_rows = p_c.index[common_r_indices]
+                    mapper = {x: i for i, x in enumerate(core_idx_norm)}
+                    p_aligned = pd.DataFrame(0, index=df_math.index, columns=p_c.columns)
+                    for r in valid_rows:
+                        nm = r.strip().lower()
+                        if nm in mapper: p_aligned.loc[df_math.index[mapper[nm]]] = p_c.loc[r]
+                    proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
+                    res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
+                        
+                if not p_aligned.empty and proj.size > 0:
+                    res['LayerName'] = cfg['name']; res['Visible'] = cfg['show']
+                    pass_list.append(res)
+            st.session_state.passive_data = pass_list
+    except: pass
+
+# ==========================================
 # UI
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Strategic Map", "💬 Strategy Chat", "🧹 MRI Cleaner", "📟 Count Codes"])
 
 with tab1:
     st.title("🗺️ The Consumer Landscape")
+    
+    # --- SIDEBAR CONSTRUCTION ---
     with st.sidebar:
         st.header("📂 Data & Projects")
         with st.expander("💾 Manage Project", expanded=False):
@@ -93,7 +163,6 @@ with tab1:
                     st.session_state.processed_data = True
                     st.rerun()
                 except: st.error("Load failed.")
-            
             if st.session_state.processed_data:
                 proj_name = st.text_input("Project Name", "Strategy_Map")
                 proj_dict = {'df_brands': st.session_state.df_brands, 'df_attrs': st.session_state.df_attrs, 'passive_data': st.session_state.passive_data, 'accuracy': st.session_state.accuracy, 'universe_size': st.session_state.universe_size}
@@ -103,10 +172,9 @@ with tab1:
         uploaded_file = st.file_uploader("Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
         passive_files = st.file_uploader("Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
         
-        # --- PASSIVE LAYER MANAGER ---
+        # Capture config for processing
         passive_configs = []
         if passive_files:
-            st.divider()
             st.subheader("⚙️ Layer Manager")
             for pf in passive_files:
                 with st.expander(f"{pf.name}", expanded=False):
@@ -115,14 +183,44 @@ with tab1:
                     p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{pf.name}")
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
 
-        # --- MAP CONTROLS (LABELS & FILTERS) ---
+        # TRIGGER PROCESSING
+        if uploaded_file: process_data(uploaded_file, passive_files, passive_configs)
+
+        # --- STABILITY METRIC (MOVED TO SIDEBAR) ---
+        if st.session_state.processed_data:
+            st.divider()
+            stab = st.session_state.accuracy
+            s_col = "normal" if stab >= 60 else "inverse" # Metric color trick or use markdown
+            s_icon = "✅" if stab >= 60 else "⚠️"
+            
+            # Using Markdown for precise Green/Red control
+            color_hex = "#2e7d32" if stab >= 60 else "#c62828"
+            st.markdown(f"""
+            <div style="background-color: #fff; border: 1px solid #ddd; padding: 10px; border-radius: 5px; border-left: 5px solid {color_hex}; text-align: center;">
+                <span style="font-size: 0.9em; font-weight: bold; color: #555;">MAP STABILITY</span><br>
+                <span style="font-size: 1.6em; font-weight: 800; color: {color_hex};">{stab:.1f}%</span><br>
+                <span style="font-size: 0.8em; color: {color_hex};">{s_icon} {"Stable" if stab>=60 else "Unstable"}</span>
+            </div>
+            """, unsafe_allow_html=True)
+            if stab < 60: st.caption("Caution: Low variance explained.")
+
+        # --- MAP CONTROLS (GROUPED) ---
         st.divider()
         st.header("🏷️ Map Controls")
+        
+        # 1. HIGHLIGHT BRAND (MOVED TO SIDEBAR)
+        f_brand = "None"
+        if st.session_state.processed_data:
+            # Sort brands case insensitive
+            b_list = sorted(st.session_state.df_brands['Label'].tolist(), key=str.casefold)
+            f_brand = st.selectbox("Highlight Brand:", ["None"] + b_list)
+
+        # 2. LABELS
         lbl_cols = st.checkbox("Brand Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
         lbl_passive = st.checkbox("Passive Labels", True)
         
-        # Placeholder for dynamic filters (populated later)
+        # 3. FILTERS
         placeholder_filters = st.container()
 
         st.divider()
@@ -132,89 +230,13 @@ with tab1:
         strictness = st.slider("🎯 Definition Tightness", 0, 100, 30)
         map_rotation = st.slider("🔄 Map Rotation", 0, 360, 0, step=90)
 
-    if uploaded_file:
-        try:
-            raw_data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-            df_math_ready = clean_df(raw_data, is_core=True)
-            df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
-            if not df_math.empty:
-                # SVD
-                N = df_math.values; matrix_sum = N.sum()
-                if matrix_sum == 0: st.error("Data sum is zero."); st.stop()
-                P = N / matrix_sum; r = P.sum(axis=1); c = P.sum(axis=0); E = np.outer(r,c)
-                E[E < 1e-9] = 1e-9; R = (P - E) / np.sqrt(E); U, s, Vh = np.linalg.svd(R, full_matrices=False)
-                row_coords = (U * s) / np.sqrt(r[:, np.newaxis]); col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
-                
-                st.session_state.df_brands = pd.DataFrame(col_coords[:, :2], columns=['x','y']); st.session_state.df_brands['Label'] = df_math.columns
-                st.session_state.df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x','y']); st.session_state.df_attrs['Label'] = df_math.index
-                st.session_state.df_attrs['Weight'] = df_math.sum(axis=1).values 
-                
-                eig_vals = np.array(s)**2
-                total_var = np.sum(eig_vals)
-                st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
-                st.session_state.processed_data = True
-
-                # Process Passives (Fuzzy)
-                pass_list = []
-                for cfg in passive_configs:
-                    pf = cfg['file']
-                    p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
-                    p_c = clean_df(p_raw, is_core=False)
-                    
-                    p_cols_norm = normalize_strings(p_c.columns)
-                    core_cols_norm = normalize_strings(df_math.columns)
-                    common_b_indices = [i for i, x in enumerate(p_cols_norm) if x in list(core_cols_norm)]
-                    
-                    p_idx_norm = normalize_strings(p_c.index)
-                    core_idx_norm = normalize_strings(df_math.index)
-                    common_r_indices = [i for i, x in enumerate(p_idx_norm) if x in list(core_idx_norm)]
-                    
-                    is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else len(common_b_indices) > len(common_r_indices)
-                    proj = np.array([])
-                    p_aligned = pd.DataFrame()
-                    
-                    if is_rows and common_b_indices:
-                        valid_cols = p_c.columns[common_b_indices]
-                        mapper = {x: i for i, x in enumerate(core_cols_norm)}
-                        p_aligned = pd.DataFrame(0, index=p_c.index, columns=df_math.columns)
-                        for c in valid_cols:
-                            nm = c.strip().lower()
-                            if nm in mapper: p_aligned[df_math.columns[mapper[nm]]] = p_c[c]
-                        proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
-                        res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
-                    elif not is_rows and common_r_indices:
-                        valid_rows = p_c.index[common_r_indices]
-                        mapper = {x: i for i, x in enumerate(core_idx_norm)}
-                        p_aligned = pd.DataFrame(0, index=df_math.index, columns=p_c.columns)
-                        for r in valid_rows:
-                            nm = r.strip().lower()
-                            if nm in mapper: p_aligned.loc[df_math.index[mapper[nm]]] = p_c.loc[r]
-                        proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
-                        res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
-                            
-                    if not p_aligned.empty and proj.size > 0:
-                        res['LayerName'] = cfg['name'] 
-                        res['Visible'] = cfg['show']   
-                        pass_list.append(res)
-                    else:
-                        st.warning(f"⚠️ Layer '{cfg['name']}' could not be aligned. No fuzzy matches found.")
-
-                st.session_state.passive_data = pass_list
-        except Exception as e: st.error(f"Error: {e}")
-
+    # --- MAIN STAGE RENDERING ---
     if st.session_state.processed_data:
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_a = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
         df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source]
         
-        # --- STABILITY BANNER ---
-        stab = st.session_state.accuracy
-        s_col = "#2e7d32" if stab >= 60 else "#c62828"
-        s_txt = "Stable" if stab >= 60 else "Unstable"
-        st.markdown(f"""<div style="background-color:#f0f2f6;padding:15px;border-radius:10px;margin-bottom:20px;border-left:5px solid {s_col};"><h3 style="color:{s_col};margin:0;font-size:1.2rem;">{("✅" if stab >=60 else "⚠️")} Map Stability: {stab:.1f}% ({s_txt})</h3></div>""", unsafe_allow_html=True)
-        if stab < 60: st.warning("⚠️ Caution: Relationships may be distorted.")
-
         mindset_report = []
         df_a['IsCore'] = True
         for l in df_p_list: l['IsCore'] = True
@@ -251,15 +273,11 @@ with tab1:
         
         st.session_state.mindset_report = mindset_report
         
-        # --- VIEW & HIGHLIGHT CONTROLS (MAIN COLUMN) ---
-        col_ctrl1, col_ctrl2 = st.columns([2, 2])
-        with col_ctrl1:
-            if enable_clustering:
-                v_mode = st.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
-            else:
-                v_mode = "Show All"
-        with col_ctrl2:
-            f_brand = st.selectbox("Highlight Brand:", ["None"] + sorted(df_b['Label'].tolist()))
+        # --- VIEW FOCUS (REMAINS ABOVE CHART) ---
+        if enable_clustering:
+            v_mode = st.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
+        else:
+            v_mode = "Show All"
             
         # --- POPULATE SIDEBAR FILTERS ---
         with placeholder_filters:
@@ -280,7 +298,6 @@ with tab1:
 
         fig = go.Figure()
         
-        # Explicit Legend
         if enable_clustering:
             for i in range(num_clusters):
                 fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color=px.colors.qualitative.Bold[i % 10]), legendgroup=f"M{i+1}", showlegend=True, name=f"Mindset {i+1}"))
@@ -302,7 +319,6 @@ with tab1:
                 d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
-        # Render Brands
         if show_base_cols:
             res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
             fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], showlegend=False))
@@ -311,7 +327,6 @@ with tab1:
                     color, opac = get_so(r['Label'], '#1f77b4')
                     fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
 
-        # Render Mindsets
         if show_base_rows:
             if enable_clustering:
                 for cid in sorted(df_a['Cluster'].unique()):
@@ -330,7 +345,6 @@ with tab1:
                     for _, r in df_a.iterrows():
                         color, opac = get_so(r['Label'], '#d62728'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
 
-        # Render Passives
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
                 l_shape = layer['Shape'].iloc[0] 
