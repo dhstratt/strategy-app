@@ -115,15 +115,15 @@ with tab1:
                     p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{pf.name}")
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
 
+        # --- MAP CONTROLS (LABELS & FILTERS) ---
         st.divider()
         st.header("🏷️ Map Controls")
-        col_v1, col_v2 = st.columns(2)
-        show_base_cols = col_v1.checkbox("Show Brands", True)
-        show_base_rows = col_v2.checkbox("Show Rows", True)
-        
         lbl_cols = st.checkbox("Brand Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
         lbl_passive = st.checkbox("Passive Labels", True)
+        
+        # Placeholder for dynamic filters (populated later)
+        placeholder_filters = st.container()
 
         st.divider()
         st.header("⚗️ Mindset Maker")
@@ -131,7 +131,6 @@ with tab1:
         num_clusters = st.slider("Number of Mindsets", 2, 8, 4)
         strictness = st.slider("🎯 Definition Tightness", 0, 100, 30)
         map_rotation = st.slider("🔄 Map Rotation", 0, 360, 0, step=90)
-        placeholder_filters = st.empty()
 
     if uploaded_file:
         try:
@@ -251,24 +250,30 @@ with tab1:
             for l in df_p_list: l['Cluster'] = 0
         
         st.session_state.mindset_report = mindset_report
-        with placeholder_filters.container():
+        
+        # --- VIEW & HIGHLIGHT CONTROLS (MAIN COLUMN) ---
+        col_ctrl1, col_ctrl2 = st.columns([2, 2])
+        with col_ctrl1:
             if enable_clustering:
                 v_mode = st.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
             else:
                 v_mode = "Show All"
+        with col_ctrl2:
             f_brand = st.selectbox("Highlight Brand:", ["None"] + sorted(df_b['Label'].tolist()))
             
-            # --- RESTORED FILTERING ---
-            with st.expander("🔍 Filter Base Map"):
+        # --- POPULATE SIDEBAR FILTERS ---
+        with placeholder_filters:
+            with st.expander("🔍 Filter Base Map", expanded=False):
+                show_base_cols = st.checkbox("Show Brands (Dots)", True)
+                show_base_rows = st.checkbox("Show Rows (Dots)", True)
                 sel_brands = st.multiselect("Visible Brands:", sorted(df_b['Label']), default=sorted(df_b['Label']))
                 sel_rows = st.multiselect("Visible Rows:", sorted(df_a['Label']), default=sorted(df_a['Label']))
                 df_b = df_b[df_b['Label'].isin(sel_brands)]
                 df_a = df_a[df_a['Label'].isin(sel_rows)]
             
-            # Passive Layer Filtering
             for i, layer in enumerate(df_p_list):
                 if not layer.empty and layer['Visible'].iloc[0]:
-                    with st.expander(f"🔍 Filter {layer['LayerName'].iloc[0]}"):
+                    with st.expander(f"🔍 Filter {layer['LayerName'].iloc[0]}", expanded=False):
                         l_opts = sorted(layer['Label'].unique())
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
