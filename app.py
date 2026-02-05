@@ -3,11 +3,10 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-import collections
 import io
 import pickle
 
-# --- SAFE IMPORT FOR CLUSTERING ---
+# --- SAFE IMPORT ---
 try:
     from sklearn.cluster import KMeans
     HAS_SKLEARN = True
@@ -34,32 +33,29 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE INITIALIZATION ---
+# --- SESSION STATE ---
 if 'processed_data' not in st.session_state: st.session_state.processed_data = False
 if 'passive_data' not in st.session_state: st.session_state.passive_data = [] 
 if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
 if 'universe_size' not in st.session_state: st.session_state.universe_size = 258000.0
-if 'messages' not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Ask me about **Mindsets** or **Population Reach**."}]
+if 'messages' not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": "Ask me about **Mindsets** or **Population Reach**."}]
 
 # --- HELPERS ---
 def clean_df(df_input):
     label_col = df_input.columns[0]
-    df_cleaned = df_input.set_index(label_col)
-    for col in df_cleaned.columns:
-        if df_cleaned[col].dtype == 'object':
-            df_cleaned[col] = df_cleaned[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
-    df_cleaned = df_cleaned.fillna(0)
+    df = df_input.set_index(label_col)
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
+    df = df.fillna(0)
     
-    # Safely find universe baseline
-    universe_mask = df_cleaned.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
+    universe_mask = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
     if any(universe_mask):
-        st.session_state.universe_size = float(df_cleaned[universe_mask].iloc[0].sum())
+        st.session_state.universe_size = float(df[universe_mask].iloc[0].sum())
     
-    # Drop universe/base rows from the math
-    df_cleaned = df_cleaned[~df_cleaned.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
-    valid_cols = [c for c in df_cleaned.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
-    return df_cleaned[valid_cols]
+    df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+    valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
+    return df[valid_cols]
 
 def rotate_coords(df_to_rot, angle_deg):
     theta = np.radians(angle_deg)
@@ -72,7 +68,7 @@ def rotate_coords(df_to_rot, angle_deg):
     return df_new
 
 # ==========================================
-# UI TABS
+# UI
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Strategic Map", "💬 Strategy Chat", "🧹 MRI Cleaner", "📟 Count Codes"])
 
@@ -103,15 +99,30 @@ with tab1:
         uploaded_file = st.file_uploader("Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
         passive_files = st.file_uploader("Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
         
-        st.divider()
-        st.header("🏷️ Label Manager")
-        lbl_cols = st.checkbox("Show Brand Labels", True)
-        lbl_rows = st.checkbox("Show Mindset Labels", True)
-        lbl_passive = st.checkbox("Show Passive Labels", True)
+        # --- PASSIVE LAYER MANAGER ---
+        passive_configs = []
+        if passive_files:
+            st.divider()
+            st.subheader("⚙️ Layer Manager")
+            for pf in passive_files:
+                with st.expander(f"{pf.name}", expanded=False):
+                    p_name = st.text_input("Layer Name", pf.name, key=f"n_{pf.name}")
+                    p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
+                    passive_configs.append({"file": pf, "name": p_name, "show": p_show})
 
         st.divider()
-        st.header("⚗️ Mindset Precision")
-        enable_clustering = st.checkbox("Enable Mindset Discovery", True)
+        st.header("🏷️ Map Controls")
+        col_v1, col_v2 = st.columns(2)
+        show_base_cols = col_v1.checkbox("Show Brands", True)
+        show_base_rows = col_v2.checkbox("Show Rows", True)
+        
+        lbl_cols = st.checkbox("Brand Labels", True)
+        lbl_rows = st.checkbox("Row Labels", True)
+        lbl_passive = st.checkbox("Passive Labels", True)
+
+        st.divider()
+        st.header("⚗️ Mindset Maker")
+        enable_clustering = st.checkbox("Enable Mindset Discovery", False) 
         num_clusters = st.slider("Number of Mindsets", 2, 8, 4)
         strictness = st.slider("🎯 Definition Tightness", 0, 100, 30)
         map_rotation = st.slider("🔄 Map Rotation", 0, 360, 0, step=90)
@@ -123,7 +134,7 @@ with tab1:
             df_math_ready = clean_df(raw_data)
             df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
             if not df_math.empty:
-                # SVD Calculation
+                # SVD
                 N = df_math.values; matrix_sum = N.sum()
                 if matrix_sum == 0: st.error("Data sum is zero."); st.stop()
                 P = N / matrix_sum; r = P.sum(axis=1); c = P.sum(axis=0); E = np.outer(r,c)
@@ -134,15 +145,15 @@ with tab1:
                 st.session_state.df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x','y']); st.session_state.df_attrs['Label'] = df_math.index
                 st.session_state.df_attrs['Weight'] = df_math.sum(axis=1).values 
                 
-                # Accuracy calc
                 eig_vals = np.array(s)**2
                 total_var = np.sum(eig_vals)
                 st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
                 st.session_state.processed_data = True
 
-                # Process Passives
+                # Process Passives (Using Configs)
                 pass_list = []
-                for pf in (passive_files or []):
+                for cfg in passive_configs:
+                    pf = cfg['file']
                     p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
                     p_c = clean_df(p_raw)
                     common_b = list(set(p_c.columns) & set(df_math.columns))
@@ -150,10 +161,12 @@ with tab1:
                         p_aligned = p_c[common_b].reindex(columns=df_math.columns).fillna(0)
                         proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_aligned.index; res['Weight'] = p_c.sum(axis=1).values
-                        res['LayerName'] = pf.name; res['Shape'] = 'star'; res['Visible'] = True
+                        res['LayerName'] = cfg['name'] 
+                        res['Visible'] = cfg['show']   
+                        res['Shape'] = 'star'
                         pass_list.append(res)
                 st.session_state.passive_data = pass_list
-        except Exception as e: st.error(f"Mapping Failed: {e}")
+        except Exception as e: st.error(f"Error: {e}")
 
     if st.session_state.processed_data:
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
@@ -180,7 +193,7 @@ with tab1:
                 if not c_passives.empty:
                     c_passives['dist'] = np.sqrt((c_passives['x']-centroids[i][0])**2 + (c_passives['y']-centroids[i][1])**2)
                 
-                # Sizing Logic
+                # Sizing & Strictness
                 cluster_sigs = pd.concat([c_actives[['Label','Weight','dist']], c_passives[['Label','Weight','dist']] if not c_passives.empty else None]).dropna()
                 if not cluster_sigs.empty:
                     cutoff = np.percentile(cluster_sigs['dist'], 100 - strictness)
@@ -191,13 +204,20 @@ with tab1:
                     
                     core_sigs = cluster_sigs[cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
                     pop_avg = core_sigs.head(5)['Weight'].mean()
-                    pop_reach = (pop_avg / st.session_state.universe_size) * 100
-                    mindset_report.append({"id": i+1, "color": px.colors.qualitative.Bold[i % 10], "rows": core_sigs['Label'].tolist()[:10], "pop_000s": pop_avg, "percent": pop_reach, "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), "threshold": 3 if pop_reach > 12 else 2})
+                    pop_pct = (pop_avg / st.session_state.universe_size) * 100
+                    mindset_report.append({"id": i+1, "color": px.colors.qualitative.Bold[i % 10], "rows": core_sigs['Label'].tolist()[:10], "pop_000s": pop_avg, "percent": pop_pct, "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), "threshold": 3 if pop_pct > 12 else 2})
+        else:
+            # Default state if NO clustering
+            df_a['Cluster'] = 0; df_b['Cluster'] = 0
+            for l in df_p_list: l['Cluster'] = 0
         
         st.session_state.mindset_report = mindset_report
         with placeholder_filters.container():
             c1, c2 = st.columns([1, 2]); c1.metric("Stability", f"{st.session_state.accuracy:.1f}%")
-            v_mode = c2.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
+            if enable_clustering:
+                v_mode = c2.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
+            else:
+                v_mode = "Show All"
             f_brand = st.selectbox("Highlight Brand:", ["None"] + sorted(df_b['Label'].tolist()))
 
         fig = go.Figure()
@@ -213,47 +233,64 @@ with tab1:
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
         # Render Brands
-        show_base_cols = True # Defaults
-        show_base_rows = True
-        
-        res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
-        fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], name='Brands'))
-        if lbl_cols:
-            for _, r in df_b.iterrows():
-                color, opac = get_so(r['Label'], '#1f77b4')
-                fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
+        if show_base_cols:
+            res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
+            fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], name='Brands'))
+            if lbl_cols:
+                for _, r in df_b.iterrows():
+                    color, opac = get_so(r['Label'], '#1f77b4')
+                    fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
 
         # Render Mindsets
-        for cid in sorted(df_a['Cluster'].unique()) if 'Cluster' in df_a.columns else []:
-            if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
-            sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
-            res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-            fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], name=f"M{cid+1}"))
-            if lbl_rows:
-                for _, r in sub.iterrows():
-                    color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
-                    if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
-
-        # Render Passives (Corrected Name)
-        for i, layer in enumerate(df_p_list):
-            if not layer.empty and 'Cluster' in layer.columns:
-                for cid in sorted(layer['Cluster'].unique()):
+        if show_base_rows:
+            if enable_clustering:
+                for cid in sorted(df_a['Cluster'].unique()):
                     if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
-                    sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
+                    sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                     res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                    
-                    # FIX: Use .iloc[0] for name string to prevent ValueError
-                    layer_name_str = layer['LayerName'].iloc[0] if 'LayerName' in layer.columns else f"Passive {i+1}"
-                    
-                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol='diamond', color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], name=layer_name_str))
-                    if lbl_passive:
+                    # CLEAN LEGEND: Group attributes under Mindset Name
+                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], name=f"Mindset {cid+1}", legendgroup=f"M{cid+1}", showlegend=True))
+                    if lbl_rows:
                         for _, r in sub.iterrows():
-                            color, opac = get_so(r['Label'], bc, r.get('IsCore', True)); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
+                            color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
+                            if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+            else:
+                # RAW MAP STATE
+                res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
+                fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], name='Attributes'))
+                if lbl_rows:
+                    for _, r in df_a.iterrows():
+                        color, opac = get_so(r['Label'], '#d62728'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+
+        # Render Passives
+        for i, layer in enumerate(df_p_list):
+            if not layer.empty and layer['Visible'].iloc[0]:
+                if enable_clustering:
+                    for cid in sorted(layer['Cluster'].unique()):
+                        if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
+                        sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
+                        res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
+                        
+                        # CLEAN LEGEND: Hide individual layer name, merge into Mindset Group
+                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol='diamond', color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], name=f"Mindset {cid+1}", legendgroup=f"M{cid+1}", showlegend=False))
+                        
+                        if lbl_passive:
+                            for _, r in sub.iterrows():
+                                color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
+                                if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
+                else:
+                    # RAW MAP STATE (Passives)
+                    res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
+                    l_name = layer['LayerName'].iloc[0]
+                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol='diamond', color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], name=l_name))
+                    if lbl_passive:
+                        for _, r in layer.iterrows():
+                            color, opac = get_so(r['Label'], '#555'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
 
         fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
 
-        if mindset_report:
+        if mindset_report and enable_clustering:
             st.divider(); st.header("👥 Population Analysis")
             cols = st.columns(3)
             for idx, m in enumerate(mindset_report):
