@@ -209,20 +209,12 @@ with tab1:
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
         df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source]
         
-        # --- NEW STABILITY BANNER AT THE TOP ---
+        # --- STABILITY BANNER ---
         stab = st.session_state.accuracy
         s_col = "#2e7d32" if stab >= 60 else "#c62828"
         s_txt = "Stable" if stab >= 60 else "Unstable"
-        
-        st.markdown(f"""
-            <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px; border-left: 5px solid {s_col};">
-                <h3 style="color: {s_col}; margin:0; font-size: 1.2rem;">
-                    {("✅" if stab >=60 else "⚠️")} Map Stability: {stab:.1f}% ({s_txt})
-                </h3>
-            </div>
-        """, unsafe_allow_html=True)
-        if stab < 60:
-            st.warning("⚠️ Caution: This map explains less than 60% of the variance. Relationships may be distorted.")
+        st.markdown(f"""<div style="background-color:#f0f2f6;padding:15px;border-radius:10px;margin-bottom:20px;border-left:5px solid {s_col};"><h3 style="color:{s_col};margin:0;font-size:1.2rem;">{("✅" if stab >=60 else "⚠️")} Map Stability: {stab:.1f}% ({s_txt})</h3></div>""", unsafe_allow_html=True)
+        if stab < 60: st.warning("⚠️ Caution: Relationships may be distorted.")
 
         mindset_report = []
         df_a['IsCore'] = True
@@ -266,12 +258,14 @@ with tab1:
                 v_mode = "Show All"
             f_brand = st.selectbox("Highlight Brand:", ["None"] + sorted(df_b['Label'].tolist()))
             
+            # --- RESTORED FILTERING ---
             with st.expander("🔍 Filter Base Map"):
                 sel_brands = st.multiselect("Visible Brands:", sorted(df_b['Label']), default=sorted(df_b['Label']))
                 sel_rows = st.multiselect("Visible Rows:", sorted(df_a['Label']), default=sorted(df_a['Label']))
                 df_b = df_b[df_b['Label'].isin(sel_brands)]
                 df_a = df_a[df_a['Label'].isin(sel_rows)]
             
+            # Passive Layer Filtering
             for i, layer in enumerate(df_p_list):
                 if not layer.empty and layer['Visible'].iloc[0]:
                     with st.expander(f"🔍 Filter {layer['LayerName'].iloc[0]}"):
@@ -281,6 +275,7 @@ with tab1:
 
         fig = go.Figure()
         
+        # Explicit Legend
         if enable_clustering:
             for i in range(num_clusters):
                 fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color=px.colors.qualitative.Bold[i % 10]), legendgroup=f"M{i+1}", showlegend=True, name=f"Mindset {i+1}"))
@@ -302,6 +297,7 @@ with tab1:
                 d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
+        # Render Brands
         if show_base_cols:
             res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
             fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], showlegend=False))
@@ -310,6 +306,7 @@ with tab1:
                     color, opac = get_so(r['Label'], '#1f77b4')
                     fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
 
+        # Render Mindsets
         if show_base_rows:
             if enable_clustering:
                 for cid in sorted(df_a['Cluster'].unique()):
@@ -328,6 +325,7 @@ with tab1:
                     for _, r in df_a.iterrows():
                         color, opac = get_so(r['Label'], '#d62728'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
 
+        # Render Passives
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
                 l_shape = layer['Shape'].iloc[0] 
