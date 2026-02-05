@@ -41,7 +41,7 @@ if 'universe_size' not in st.session_state: st.session_state.universe_size = 258
 if 'messages' not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": "Ask me about **Mindsets** or **Population Reach**."}]
 
 # --- HELPERS ---
-def clean_df(df_input):
+def clean_df(df_input, is_core=False):
     label_col = df_input.columns[0]
     df = df_input.set_index(label_col)
     for col in df.columns:
@@ -49,9 +49,11 @@ def clean_df(df_input):
             df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
     df = df.fillna(0)
     
-    universe_mask = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
-    if any(universe_mask):
-        st.session_state.universe_size = float(df[universe_mask].iloc[0].sum())
+    # Only Core data sets the Universe Size
+    if is_core:
+        universe_mask = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
+        if any(universe_mask):
+            st.session_state.universe_size = float(df[universe_mask].iloc[0].sum())
     
     df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
@@ -66,6 +68,9 @@ def rotate_coords(df_to_rot, angle_deg):
     df_new = df_to_rot.copy()
     df_new['x'], df_new['y'] = rotated[:, 0], rotated[:, 1]
     return df_new
+
+def normalize_strings(s_index):
+    return s_index.astype(str).str.strip().str.lower()
 
 # ==========================================
 # UI
@@ -108,7 +113,6 @@ with tab1:
                 with st.expander(f"{pf.name}", expanded=False):
                     p_name = st.text_input("Layer Name", pf.name, key=f"n_{pf.name}")
                     p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
-                    # RESTORED: Map As Selector
                     p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{pf.name}")
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
 
@@ -133,7 +137,7 @@ with tab1:
     if uploaded_file:
         try:
             raw_data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-            df_math_ready = clean_df(raw_data)
+            df_math_ready = clean_df(raw_data, is_core=True)
             df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
             if not df_math.empty:
                 # SVD
@@ -152,37 +156,69 @@ with tab1:
                 st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
                 st.session_state.processed_data = True
 
-                # Process Passives (With Logic Branching)
+                # Process Passives (With Fuzzy Logic)
                 pass_list = []
                 for cfg in passive_configs:
                     pf = cfg['file']
                     p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
-                    p_c = clean_df(p_raw)
+                    p_c = clean_df(p_raw, is_core=False)
                     
-                    common_brands = list(set(p_c.columns) & set(df_math.columns))
-                    common_attrs = list(set(p_c.index) & set(df_math.index))
+                    # Fuzzy Match for Alignment
+                    p_cols_norm = normalize_strings(p_c.columns)
+                    core_cols_norm = normalize_strings(df_math.columns)
+                    common_b_indices = [i for i, x in enumerate(p_cols_norm) if x in list(core_cols_norm)]
                     
-                    # Logic Check
-                    is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else len(common_brands) > len(common_attrs)
+                    p_idx_norm = normalize_strings(p_c.index)
+                    core_idx_norm = normalize_strings(df_math.index)
+                    common_r_indices = [i for i, x in enumerate(p_idx_norm) if x in list(core_idx_norm)]
+                    
+                    is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else len(common_b_indices) > len(common_r_indices)
+                    
+                    proj = np.array([])
+                    p_aligned = pd.DataFrame()
                     
                     if is_rows:
-                        # Map as Rows (Stars) - Align to Columns
-                        if common_brands:
-                            p_aligned = p_c[common_brands].reindex(columns=df_math.columns).fillna(0)
+                        # Map as Rows (Stars) - Requires Column Overlap
+                        if common_b_indices:
+                            # Reconstruct overlapping dataframe using original names but normalized matching
+                            valid_cols = p_c.columns[common_b_indices]
+                            # We need to map these cols to the Core's order
+                            mapper = {x: i for i, x in enumerate(core_cols_norm)}
+                            
+                            p_aligned = pd.DataFrame(0, index=p_c.index, columns=df_math.columns)
+                            for c in valid_cols:
+                                norm_name = c.strip().lower()
+                                if norm_name in mapper:
+                                    target_col = df_math.columns[mapper[norm_name]]
+                                    p_aligned[target_col] = p_c[c]
+                            
                             proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
-                            res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_aligned.index; res['Weight'] = p_c.sum(axis=1).values
+                            res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values
                             res['Shape'] = 'star'
                     else:
-                        # Map as Columns (Diamonds) - Align to Rows
-                        if common_attrs:
-                            p_aligned = p_c.reindex(df_math.index).fillna(0)
+                        # Map as Columns (Diamonds) - Requires Row Overlap
+                        if common_r_indices:
+                            valid_rows = p_c.index[common_r_indices]
+                            mapper = {x: i for i, x in enumerate(core_idx_norm)}
+                            
+                            p_aligned = pd.DataFrame(0, index=df_math.index, columns=p_c.columns)
+                            for r in valid_rows:
+                                norm_name = r.strip().lower()
+                                if norm_name in mapper:
+                                    target_row = df_math.index[mapper[norm_name]]
+                                    p_aligned.loc[target_row] = p_c.loc[r]
+                                    
                             proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
-                            res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_aligned.columns; res['Weight'] = p_c.sum(axis=0).values
+                            res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values
                             res['Shape'] = 'diamond'
                             
-                    res['LayerName'] = cfg['name'] 
-                    res['Visible'] = cfg['show']   
-                    pass_list.append(res)
+                    if not p_aligned.empty and proj.size > 0:
+                        res['LayerName'] = cfg['name'] 
+                        res['Visible'] = cfg['show']   
+                        pass_list.append(res)
+                    else:
+                        st.warning(f"⚠️ Layer '{cfg['name']}' could not be aligned. No matching Brands/Attributes found.")
+
                 st.session_state.passive_data = pass_list
         except Exception as e: st.error(f"Error: {e}")
 
@@ -197,7 +233,6 @@ with tab1:
         for l in df_p_list: l['IsCore'] = True
 
         if enable_clustering and HAS_SKLEARN:
-            # 1. Pool data
             pool = pd.concat([df_a[['x','y']]] + [l[['x','y']] for l in df_p_list if not l.empty])
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
             centroids = kmeans.cluster_centers_
@@ -212,7 +247,6 @@ with tab1:
                 if not c_passives.empty:
                     c_passives['dist'] = np.sqrt((c_passives['x']-centroids[i][0])**2 + (c_passives['y']-centroids[i][1])**2)
                 
-                # Sizing & Strictness
                 cluster_sigs = pd.concat([c_actives[['Label','Weight','dist']], c_passives[['Label','Weight','dist']] if not c_passives.empty else None]).dropna()
                 if not cluster_sigs.empty:
                     cutoff = np.percentile(cluster_sigs['dist'], 100 - strictness)
@@ -226,7 +260,6 @@ with tab1:
                     pop_pct = (pop_avg / st.session_state.universe_size) * 100
                     mindset_report.append({"id": i+1, "color": px.colors.qualitative.Bold[i % 10], "rows": core_sigs['Label'].tolist()[:10], "pop_000s": pop_avg, "percent": pop_pct, "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), "threshold": 3 if pop_pct > 12 else 2})
         else:
-            # Default state if NO clustering
             df_a['Cluster'] = 0; df_b['Cluster'] = 0
             for l in df_p_list: l['Cluster'] = 0
         
@@ -282,7 +315,7 @@ with tab1:
         # Render Passives
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
-                l_shape = layer['Shape'].iloc[0] # Star or Diamond
+                l_shape = layer['Shape'].iloc[0] 
                 l_name = layer['LayerName'].iloc[0]
                 
                 if enable_clustering:
@@ -312,9 +345,6 @@ with tab1:
                 with cols[idx % 3]:
                     st.markdown(f"""<div class="mindset-card" style="border-left-color: {m['color']};"><span class="size-badge">{m['percent']:.1f}% US</span><h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3><p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p><p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p></div>""", unsafe_allow_html=True)
 
-# ==========================================
-# CHAT, CLEANER, CODES
-# ==========================================
 with tab2:
     st.header("💬 AI Strategy Chat")
     if not st.session_state.processed_data: st.warning("Upload data.")
