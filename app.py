@@ -49,7 +49,6 @@ def clean_df(df_input, is_core=False):
             df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
     df = df.fillna(0)
     
-    # Only Core data sets the Universe Size
     if is_core:
         universe_mask = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
         if any(universe_mask):
@@ -156,14 +155,13 @@ with tab1:
                 st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
                 st.session_state.processed_data = True
 
-                # Process Passives (With Fuzzy Logic)
+                # Process Passives (Fuzzy)
                 pass_list = []
                 for cfg in passive_configs:
                     pf = cfg['file']
                     p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
                     p_c = clean_df(p_raw, is_core=False)
                     
-                    # Fuzzy Match for Alignment
                     p_cols_norm = normalize_strings(p_c.columns)
                     core_cols_norm = normalize_strings(df_math.columns)
                     common_b_indices = [i for i, x in enumerate(p_cols_norm) if x in list(core_cols_norm)]
@@ -173,51 +171,34 @@ with tab1:
                     common_r_indices = [i for i, x in enumerate(p_idx_norm) if x in list(core_idx_norm)]
                     
                     is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else len(common_b_indices) > len(common_r_indices)
-                    
                     proj = np.array([])
                     p_aligned = pd.DataFrame()
                     
-                    if is_rows:
-                        # Map as Rows (Stars) - Requires Column Overlap
-                        if common_b_indices:
-                            # Reconstruct overlapping dataframe using original names but normalized matching
-                            valid_cols = p_c.columns[common_b_indices]
-                            # We need to map these cols to the Core's order
-                            mapper = {x: i for i, x in enumerate(core_cols_norm)}
-                            
-                            p_aligned = pd.DataFrame(0, index=p_c.index, columns=df_math.columns)
-                            for c in valid_cols:
-                                norm_name = c.strip().lower()
-                                if norm_name in mapper:
-                                    target_col = df_math.columns[mapper[norm_name]]
-                                    p_aligned[target_col] = p_c[c]
-                            
-                            proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
-                            res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values
-                            res['Shape'] = 'star'
-                    else:
-                        # Map as Columns (Diamonds) - Requires Row Overlap
-                        if common_r_indices:
-                            valid_rows = p_c.index[common_r_indices]
-                            mapper = {x: i for i, x in enumerate(core_idx_norm)}
-                            
-                            p_aligned = pd.DataFrame(0, index=df_math.index, columns=p_c.columns)
-                            for r in valid_rows:
-                                norm_name = r.strip().lower()
-                                if norm_name in mapper:
-                                    target_row = df_math.index[mapper[norm_name]]
-                                    p_aligned.loc[target_row] = p_c.loc[r]
-                                    
-                            proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
-                            res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values
-                            res['Shape'] = 'diamond'
+                    if is_rows and common_b_indices:
+                        valid_cols = p_c.columns[common_b_indices]
+                        mapper = {x: i for i, x in enumerate(core_cols_norm)}
+                        p_aligned = pd.DataFrame(0, index=p_c.index, columns=df_math.columns)
+                        for c in valid_cols:
+                            nm = c.strip().lower()
+                            if nm in mapper: p_aligned[df_math.columns[mapper[nm]]] = p_c[c]
+                        proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
+                        res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
+                    elif not is_rows and common_r_indices:
+                        valid_rows = p_c.index[common_r_indices]
+                        mapper = {x: i for i, x in enumerate(core_idx_norm)}
+                        p_aligned = pd.DataFrame(0, index=df_math.index, columns=p_c.columns)
+                        for r in valid_rows:
+                            nm = r.strip().lower()
+                            if nm in mapper: p_aligned.loc[df_math.index[mapper[nm]]] = p_c.loc[r]
+                        proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
+                        res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
                             
                     if not p_aligned.empty and proj.size > 0:
                         res['LayerName'] = cfg['name'] 
                         res['Visible'] = cfg['show']   
                         pass_list.append(res)
                     else:
-                        st.warning(f"⚠️ Layer '{cfg['name']}' could not be aligned. No matching Brands/Attributes found.")
+                        st.warning(f"⚠️ Layer '{cfg['name']}' could not be aligned. No fuzzy matches found.")
 
                 st.session_state.passive_data = pass_list
         except Exception as e: st.error(f"Error: {e}")
@@ -244,8 +225,7 @@ with tab1:
                 c_actives = df_a[df_a['Cluster'] == i].copy()
                 c_actives['dist'] = np.sqrt((c_actives['x']-centroids[i][0])**2 + (c_actives['y']-centroids[i][1])**2)
                 c_passives = pd.concat([l[l['Cluster'] == i] for l in df_p_list if not l.empty]) if df_p_list else pd.DataFrame()
-                if not c_passives.empty:
-                    c_passives['dist'] = np.sqrt((c_passives['x']-centroids[i][0])**2 + (c_passives['y']-centroids[i][1])**2)
+                if not c_passives.empty: c_passives['dist'] = np.sqrt((c_passives['x']-centroids[i][0])**2 + (c_passives['y']-centroids[i][1])**2)
                 
                 cluster_sigs = pd.concat([c_actives[['Label','Weight','dist']], c_passives[['Label','Weight','dist']] if not c_passives.empty else None]).dropna()
                 if not cluster_sigs.empty:
@@ -266,13 +246,23 @@ with tab1:
         st.session_state.mindset_report = mindset_report
         with placeholder_filters.container():
             c1, c2 = st.columns([1, 2]); c1.metric("Stability", f"{st.session_state.accuracy:.1f}%")
-            if enable_clustering:
-                v_mode = c2.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
-            else:
-                v_mode = "Show All"
+            v_mode = c2.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report]) if enable_clustering else "Show All"
             f_brand = st.selectbox("Highlight Brand:", ["None"] + sorted(df_b['Label'].tolist()))
 
         fig = go.Figure()
+        
+        # --- EXPLICIT LEGEND GENERATOR ---
+        # This fixes the "missing colored dots" bug by pre-populating the legend
+        if enable_clustering:
+            for i in range(num_clusters):
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color=px.colors.qualitative.Bold[i % 10]), legendgroup=f"M{i+1}", showlegend=True, name=f"Mindset {i+1}"))
+        else:
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Brands"))
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
+            for l in df_p_list:
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#555', symbol=l['Shape'].iloc[0]), name=l['LayerName'].iloc[0]))
+
+        # --- DATA PLOTTING ---
         def get_so(lbl, base_c, is_core=True):
             if f_brand == "None": return (base_c, 0.9) if is_core else ('#eeeeee', 0.15)
             return (base_c, 1.0) if (lbl == f_brand or lbl in hl) else ('#d3d3d3', 0.2)
@@ -284,56 +274,54 @@ with tab1:
                 d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
-        # Render Brands
+        # Brands
         if show_base_cols:
             res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
-            fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], name='Brands'))
+            fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], showlegend=False))
             if lbl_cols:
                 for _, r in df_b.iterrows():
-                    color, opac = get_so(r['Label'], '#1f77b4')
-                    fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
+                    c, o = get_so(r['Label'], '#1f77b4')
+                    fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-20, font=dict(color=c, size=12))
 
-        # Render Mindsets
+        # Mindsets
         if show_base_rows:
             if enable_clustering:
                 for cid in sorted(df_a['Cluster'].unique()):
                     if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
                     sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                     res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], name=f"Mindset {cid+1}", legendgroup=f"M{cid+1}", showlegend=True))
+                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
                     if lbl_rows:
                         for _, r in sub.iterrows():
-                            color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
-                            if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+                            c, o = get_so(r['Label'], bc, r.get('IsCore', True))
+                            if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
             else:
                 res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
-                fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], name='Attributes'))
+                fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], showlegend=False))
                 if lbl_rows:
                     for _, r in df_a.iterrows():
-                        color, opac = get_so(r['Label'], '#d62728'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+                        c, o = get_so(r['Label'], '#d62728'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
 
-        # Render Passives
+        # Passives
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
                 l_shape = layer['Shape'].iloc[0] 
-                l_name = layer['LayerName'].iloc[0]
-                
                 if enable_clustering:
                     for cid in sorted(layer['Cluster'].unique()):
                         if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
                         sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                         res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], name=f"Mindset {cid+1}", legendgroup=f"M{cid+1}", showlegend=False))
+                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
                         if lbl_passive:
                             for _, r in sub.iterrows():
-                                color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
-                                if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
+                                c, o = get_so(r['Label'], bc, r.get('IsCore', True))
+                                if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=10))
                 else:
                     res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
-                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], name=l_name))
+                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], showlegend=False))
                     if lbl_passive:
                         for _, r in layer.iterrows():
-                            color, opac = get_so(r['Label'], '#555'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
+                            c, o = get_so(r['Label'], '#555'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=10))
 
         fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
