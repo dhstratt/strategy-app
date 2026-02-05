@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 import collections
 import io
 import pickle
@@ -38,7 +37,7 @@ st.markdown("""
 if 'processed_data' not in st.session_state: st.session_state.processed_data = False
 if 'passive_data' not in st.session_state: st.session_state.passive_data = [] 
 if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
-if 'universe_size' not in st.session_state: st.session_state.universe_size = 258000
+if 'universe_size' not in st.session_state: st.session_state.universe_size = 258000.0
 if 'messages' not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "Ask me about **Mindsets** or **Population Reach**."}]
 
@@ -51,22 +50,23 @@ def clean_df(df):
             df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
     df = df.fillna(0)
     
-    # Try to extract the population baseline (Universe)
-    universe_row = df[df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)]
+    # Capture the population baseline (Universe) safely
+    universe_mask = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
+    universe_row = df[universe_mask]
     if not universe_row.empty:
         st.session_state.universe_size = float(universe_row.iloc[0].sum())
-        
+    
     df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
     return df[valid_cols]
 
-def rotate_coords(df_to_rot, angle_deg):
+def rotate_coords(df_input, angle_deg):
     theta = np.radians(angle_deg)
     c, s = np.cos(theta), np.sin(theta)
     R = np.array(((c, -s), (s, c)))
-    coords = df_to_rot[['x', 'y']].values
+    coords = df_input[['x', 'y']].values
     rotated = coords @ R.T
-    df_new = df_to_rot.copy()
+    df_new = df_input.copy()
     df_new['x'], df_new['y'] = rotated[:, 0], rotated[:, 1]
     return df_new
 
@@ -88,12 +88,13 @@ with tab1:
                     st.session_state.df_attrs = p_data['df_attrs']
                     st.session_state.passive_data = p_data['passive_data']
                     st.session_state.accuracy = p_data['accuracy']
-                    st.session_state.universe_size = p_data.get('universe_size', 258000)
+                    st.session_state.universe_size = float(p_data.get('universe_size', 258000.0))
                     st.session_state.processed_data = True
                     st.rerun()
                 except: st.error("Load failed.")
-            proj_name = st.text_input("Project Name", "My_Landscape")
+            
             if st.session_state.processed_data:
+                proj_name = st.text_input("Project Name", "Strategy_Map")
                 proj_dict = {'df_brands': st.session_state.df_brands, 'df_attrs': st.session_state.df_attrs, 'passive_data': st.session_state.passive_data, 'accuracy': st.session_state.accuracy, 'universe_size': st.session_state.universe_size}
                 buffer = io.BytesIO(); pickle.dump(proj_dict, buffer); buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
@@ -113,7 +114,6 @@ with tab1:
         num_clusters = st.slider("Number of Mindsets", 2, 8, 4)
         strictness = st.slider("🎯 Definition Tightness", 0, 100, 30)
         map_rotation = st.slider("🔄 Map Rotation", 0, 360, 0, step=90)
-        st.divider()
         placeholder_filters = st.empty()
 
     if uploaded_file:
@@ -124,10 +124,13 @@ with tab1:
                 N = df_math.values; P = N/N.sum(); r = P.sum(axis=1); c = P.sum(axis=0); E = np.outer(r,c)
                 E[E<1e-9]=1e-9; R=(P-E)/np.sqrt(E); U, s, Vh = np.linalg.svd(R, full_matrices=False)
                 row_coords = (U*s)/np.sqrt(r[:, np.newaxis]); col_coords = (Vh.T*s)/np.sqrt(c[:, np.newaxis])
+                
                 st.session_state.df_brands = pd.DataFrame(col_coords[:, :2], columns=['x','y']); st.session_state.df_brands['Label'] = df_math.columns
                 st.session_state.df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x','y']); st.session_state.df_attrs['Label'] = df_math.index
                 st.session_state.df_attrs['Weight'] = df_math.sum(axis=1).values 
-                st.session_state.accuracy = (np.sum(s**2[:2])/np.sum(s**2))*100
+                
+                eig_vals = s**2
+                st.session_state.accuracy = (np.sum(eig_vals[:2]) / np.sum(eig_vals)) * 100
                 st.session_state.processed_data = True
 
                 pass_list = []
@@ -141,7 +144,7 @@ with tab1:
                         res['LayerName'] = pf.name; res['Shape'] = 'star'; res['Visible'] = True
                         pass_list.append(res)
                 st.session_state.passive_data = pass_list
-        except Exception as e: st.error(f"Error: {e}")
+        except Exception as e: st.error(f"Math Error: {e}")
 
     if st.session_state.processed_data:
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
@@ -172,8 +175,10 @@ with tab1:
                     cutoff = np.percentile(all_cluster_sigs['dist'], 100 - strictness)
                     df_a.loc[df_a['Cluster']==i, 'IsCore'] = c_actives['dist'] <= cutoff
                     for l in df_p_list: 
-                        l_dists = np.sqrt((l['x']-centroids[i][0])**2 + (l['y']-centroids[i][1])**2)
-                        l.loc[l['Cluster']==i, 'IsCore'] = l_dists <= cutoff
+                        l_mask = l['Cluster']==i
+                        if any(l_mask):
+                            l_dists = np.sqrt((l.loc[l_mask, 'x']-centroids[i][0])**2 + (l.loc[l_mask, 'y']-centroids[i][1])**2)
+                            l.loc[l_mask, 'IsCore'] = l_dists <= cutoff
                     
                     core_sigs = all_cluster_sigs[all_cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
                     pop_weight = core_sigs.head(5)['Weight'].mean()
@@ -240,35 +245,34 @@ with tab1:
                         <span class="size-badge">{m['percent']:.1f}% Pop.</span>
                         <h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3>
                         <p><b>Core Volume:</b> {m['pop_000s']:,.0f} (000s)</p>
-                        <p><b>Defining Signals:</b><br>{", ".join(m['rows'][:5])}...</p>
+                        <p><b>Top Signals:</b><br>{", ".join(m['rows'][:5])}...</p>
                     </div>""", unsafe_allow_html=True)
 
 # ==========================================
-# RESTORED TABS: CHAT, CLEANER, CODES
+# OTHER TABS
 # ==========================================
 with tab2:
     st.header("💬 AI Strategy Chat")
-    if not st.session_state.processed_data: st.warning("Upload data first.")
+    if not st.session_state.processed_data: st.warning("Upload data.")
     else:
         def analyze_query(query):
             q, df_b, df_a = query.lower(), st.session_state.df_brands, st.session_state.df_attrs
-            if "theme" in q: return f"**Map Themes:**\n* ↔️ **X-Axis:** {df_a.loc[df_a['x'].idxmin()]['Label']} vs {df_a.loc[df_a['x'].idxmax()]['Label']}\n* ↕️ **Y-Axis:** {df_a.loc[df_a['y'].idxmin()]['Label']} vs {df_a.loc[df_a['y'].idxmax()]['Label']}"
+            if "theme" in q: return f"↔️ **X:** {df_a.loc[df_a['x'].idxmin()]['Label']} vs {df_a.loc[df_a['x'].idxmax()]['Label']}"
             for b in df_b['Label']:
                 if b.lower() in q:
                     br = df_b[df_b['Label']==b].iloc[0]; df_a['D'] = np.sqrt((df_a['x']-br['x'])**2 + (df_a['y']-br['y'])**2)
-                    return f"**Brand Audit: {b}**\n✅ **Core Strengths:** {', '.join(df_a.sort_values('D').head(3)['Label'].tolist())}"
-            return "Try asking about 'themes' or a specific brand."
+                    return f"✅ **{b} Strengths:** {', '.join(df_a.sort_values('D').head(3)['Label'].tolist())}"
+            return "Ask about themes or brands."
         for m in st.session_state.messages:
             with st.chat_message(m["role"]): st.markdown(m["content"])
-        if prompt := st.chat_input("Ask about the map..."):
+        if prompt := st.chat_input("Ask..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"): st.markdown(prompt)
-            st.session_state.messages.append({"role": "assistant", "content": analyze_query(prompt)})
-            st.rerun()
+            st.session_state.messages.append({"role": "assistant", "content": analyze_query(prompt)}); st.rerun()
 
 with tab3:
     st.header("🧹 MRI Data Cleaner")
-    raw_mri = st.file_uploader("Upload Raw MRI Export", type=["csv", "xlsx", "xls"])
+    raw_mri = st.file_uploader("Upload MRI", type=["csv", "xlsx", "xls"])
     if raw_mri:
         try:
             df_r = pd.read_csv(raw_mri, header=None) if raw_mri.name.endswith('.csv') else pd.read_excel(raw_mri, header=None)
@@ -288,10 +292,9 @@ with tab3:
 
 with tab4:
     st.header("📟 Count Code Maker")
-    if not st.session_state.mindset_report: st.warning("Enable Mindset Discovery first.")
+    if not st.session_state.mindset_report: st.warning("Discovery required.")
     else:
         for t in st.session_state.mindset_report:
             with st.expander(f"Mindset {t['id']} Formula (~{t['percent']:.1f}% Pop)", expanded=True):
                 m_code = "(" + " + ".join([f"[{r}]" for r in t['rows']]) + f") >= {t['threshold']}"
-                st.markdown('<div class="logic-tag">MRI-SIMMONS SYNTAX</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="code-block">{m_code}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{m_code}</div>', unsafe_allow_html=True)
