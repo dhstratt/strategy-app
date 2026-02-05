@@ -45,26 +45,25 @@ if 'messages' not in st.session_state:
 # --- HELPERS ---
 def clean_df(df_input):
     label_col = df_input.columns[0]
-    df_cleaned = df_input.set_index(label_col)
-    for col in df_cleaned.columns:
-        if df_cleaned[col].dtype == 'object':
-            df_cleaned[col] = df_cleaned[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
-    df_cleaned = df_cleaned.fillna(0)
+    df = df_input.set_index(label_col)
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
+    df = df.fillna(0)
     
     # Safely find universe baseline
-    universe_mask = df_cleaned.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
+    universe_mask = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
     if any(universe_mask):
-        st.session_state.universe_size = float(df_cleaned[universe_mask].iloc[0].sum())
+        st.session_state.universe_size = float(df[universe_mask].iloc[0].sum())
     
-    # Drop universe/base rows from the math
-    df_cleaned = df_cleaned[~df_cleaned.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
-    valid_cols = [c for c in df_cleaned.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
-    return df_cleaned[valid_cols]
+    df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+    valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
+    return df[valid_cols]
 
 def rotate_coords(df_to_rot, angle_deg):
     theta = np.radians(angle_deg)
-    c, s_rot = np.cos(theta), np.sin(theta)
-    R = np.array(((c, -s_rot), (s_rot, c)))
+    c, s = np.cos(theta), np.sin(theta)
+    R = np.array(((c, -s), (s, c)))
     coords = df_to_rot[['x', 'y']].values
     rotated = coords @ R.T
     df_new = df_to_rot.copy()
@@ -103,11 +102,26 @@ with tab1:
         uploaded_file = st.file_uploader("Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
         passive_files = st.file_uploader("Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
         
+        # --- LAYER VISIBILITY (RESTORED) ---
         st.divider()
-        st.header("🏷️ Label Manager")
-        lbl_cols = st.checkbox("Show Brand Labels", True)
-        lbl_rows = st.checkbox("Show Mindset Labels", True)
-        lbl_passive = st.checkbox("Show Passive Labels", True)
+        st.header("🎨 Layer Visibility")
+        col_v1, col_v2 = st.columns(2)
+        show_base_cols = col_v1.checkbox("Brands (Dots)", True)
+        show_base_rows = col_v2.checkbox("Mindsets (Dots)", True)
+        
+        passive_configs = []
+        if passive_files:
+            st.subheader("Passive Layers")
+            for pf in passive_files:
+                # We assume all uploaded passives are visible by default for simplicity in reprocessing
+                # but we can add toggles if needed. For now, let's process them all.
+                pass 
+
+        st.divider()
+        st.header("🏷️ Label Controls")
+        lbl_cols = st.checkbox("Brand Labels", True)
+        lbl_rows = st.checkbox("Mindset Labels", True)
+        lbl_passive = st.checkbox("Passive Labels", True)
 
         st.divider()
         st.header("⚗️ Mindset Precision")
@@ -259,7 +273,7 @@ with tab1:
                     st.markdown(f"""<div class="mindset-card" style="border-left-color: {m['color']};"><span class="size-badge">{m['percent']:.1f}% US</span><h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3><p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p><p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p></div>""", unsafe_allow_html=True)
 
 # ==========================================
-# CHAT, CLEANER, CODES (FULLY RESTORED)
+# CHAT, CLEANER, CODES
 # ==========================================
 with tab2:
     st.header("💬 AI Strategy Chat")
@@ -267,7 +281,7 @@ with tab2:
     else:
         def analyze_query(query):
             q, df_b_chat, df_a_chat = query.lower(), st.session_state.df_brands, st.session_state.df_attrs
-            if "theme" in q: return f"↔️ **X:** {df_a_chat.loc[df_a_chat['x'].idxmin()]['Label']} to {df_a_chat.loc[df_a_chat['x'].idxmax()]['Label']}"
+            if "theme" in q: return f"↔️ **X:** {df_a_chat.loc[df_a_chat['x'].idxmin()]['Label']} vs {df_a_chat.loc[df_a_chat['x'].idxmax()]['Label']}"
             for b in df_b_chat['Label']:
                 if b.lower() in q:
                     br = df_b_chat[df_b_chat['Label']==b].iloc[0]; df_a_chat['D'] = np.sqrt((df_a_chat['x']-br['x'])**2 + (df_a_chat['y']-br['y'])**2)
