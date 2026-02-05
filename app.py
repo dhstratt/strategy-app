@@ -30,7 +30,6 @@ st.markdown("""
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
-        /* Sidebar metric styling */
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -74,14 +73,16 @@ def normalize_strings(s_index):
     return s_index.astype(str).str.strip().str.lower()
 
 # ==========================================
-# DATA PROCESSING ENGINE (RUNS FIRST)
+# DATA PROCESSING ENGINE
 # ==========================================
-# We define the processing logic here so we can populate the sidebar immediately after
 def process_data(uploaded_file, passive_files, passive_configs):
     try:
+        # FIX: Rewind file pointer
+        uploaded_file.seek(0)
         raw_data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         df_math_ready = clean_df(raw_data, is_core=True)
         df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
+        
         if not df_math.empty:
             N = df_math.values; matrix_sum = N.sum()
             if matrix_sum == 0: return
@@ -102,6 +103,8 @@ def process_data(uploaded_file, passive_files, passive_configs):
             pass_list = []
             for cfg in passive_configs:
                 pf = cfg['file']
+                # FIX: Rewind Passive File Pointer
+                pf.seek(0)
                 p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
                 p_c = clean_df(p_raw, is_core=False)
                 
@@ -118,26 +121,33 @@ def process_data(uploaded_file, passive_files, passive_configs):
                     valid_cols = p_c.columns[common_b_indices]
                     mapper = {x: i for i, x in enumerate(core_cols_norm)}
                     p_aligned = pd.DataFrame(0, index=p_c.index, columns=df_math.columns)
-                    for c in valid_cols:
-                        nm = c.strip().lower()
-                        if nm in mapper: p_aligned[df_math.columns[mapper[nm]]] = p_c[c]
-                    proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
-                    res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
+                    for col_name in valid_cols:
+                        nm = col_name.strip().lower()
+                        if nm in mapper: p_aligned[df_math.columns[mapper[nm]]] = p_c[col_name]
+                    
+                    if not p_aligned.empty:
+                        proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
+                        res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
+                
                 elif not is_rows and common_r_indices:
                     valid_rows = p_c.index[common_r_indices]
                     mapper = {x: i for i, x in enumerate(core_idx_norm)}
                     p_aligned = pd.DataFrame(0, index=df_math.index, columns=p_c.columns)
-                    for r in valid_rows:
-                        nm = r.strip().lower()
-                        if nm in mapper: p_aligned.loc[df_math.index[mapper[nm]]] = p_c.loc[r]
-                    proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
-                    res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
+                    for row_name in valid_rows:
+                        nm = row_name.strip().lower()
+                        if nm in mapper: p_aligned.loc[df_math.index[mapper[nm]]] = p_c.loc[row_name]
+                    
+                    if not p_aligned.empty:
+                        proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
+                        res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
                         
                 if not p_aligned.empty and proj.size > 0:
                     res['LayerName'] = cfg['name']; res['Visible'] = cfg['show']
                     pass_list.append(res)
+            
             st.session_state.passive_data = pass_list
-    except: pass
+    except Exception as e:
+        st.error(f"Processing Error: {e}")
 
 # ==========================================
 # UI
@@ -147,7 +157,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Strategic Map", "💬 Strategy Chat",
 with tab1:
     st.title("🗺️ The Consumer Landscape")
     
-    # --- SIDEBAR CONSTRUCTION ---
     with st.sidebar:
         st.header("📂 Data & Projects")
         with st.expander("💾 Manage Project", expanded=False):
@@ -186,41 +195,31 @@ with tab1:
         # TRIGGER PROCESSING
         if uploaded_file: process_data(uploaded_file, passive_files, passive_configs)
 
-        # --- STABILITY METRIC (MOVED TO SIDEBAR) ---
+        # STABILITY INDICATOR
         if st.session_state.processed_data:
             st.divider()
             stab = st.session_state.accuracy
-            s_col = "normal" if stab >= 60 else "inverse" # Metric color trick or use markdown
-            s_icon = "✅" if stab >= 60 else "⚠️"
-            
-            # Using Markdown for precise Green/Red control
-            color_hex = "#2e7d32" if stab >= 60 else "#c62828"
+            s_col = "#2e7d32" if stab >= 60 else "#c62828"
             st.markdown(f"""
-            <div style="background-color: #fff; border: 1px solid #ddd; padding: 10px; border-radius: 5px; border-left: 5px solid {color_hex}; text-align: center;">
+            <div style="background-color: #fff; border: 1px solid #ddd; padding: 10px; border-radius: 5px; border-left: 5px solid {s_col}; text-align: center;">
                 <span style="font-size: 0.9em; font-weight: bold; color: #555;">MAP STABILITY</span><br>
-                <span style="font-size: 1.6em; font-weight: 800; color: {color_hex};">{stab:.1f}%</span><br>
-                <span style="font-size: 0.8em; color: {color_hex};">{s_icon} {"Stable" if stab>=60 else "Unstable"}</span>
+                <span style="font-size: 1.6em; font-weight: 800; color: {s_col};">{stab:.1f}%</span><br>
+                <span style="font-size: 0.8em; color: {s_col};">{("✅ Stable" if stab>=60 else "⚠️ Unstable")}</span>
             </div>
             """, unsafe_allow_html=True)
-            if stab < 60: st.caption("Caution: Low variance explained.")
 
-        # --- MAP CONTROLS (GROUPED) ---
         st.divider()
         st.header("🏷️ Map Controls")
         
-        # 1. HIGHLIGHT BRAND (MOVED TO SIDEBAR)
         f_brand = "None"
         if st.session_state.processed_data:
-            # Sort brands case insensitive
             b_list = sorted(st.session_state.df_brands['Label'].tolist(), key=str.casefold)
             f_brand = st.selectbox("Highlight Brand:", ["None"] + b_list)
 
-        # 2. LABELS
         lbl_cols = st.checkbox("Brand Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
         lbl_passive = st.checkbox("Passive Labels", True)
         
-        # 3. FILTERS
         placeholder_filters = st.container()
 
         st.divider()
@@ -230,7 +229,7 @@ with tab1:
         strictness = st.slider("🎯 Definition Tightness", 0, 100, 30)
         map_rotation = st.slider("🔄 Map Rotation", 0, 360, 0, step=90)
 
-    # --- MAIN STAGE RENDERING ---
+    # --- RENDER ---
     if st.session_state.processed_data:
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_a = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
@@ -273,13 +272,11 @@ with tab1:
         
         st.session_state.mindset_report = mindset_report
         
-        # --- VIEW FOCUS (REMAINS ABOVE CHART) ---
         if enable_clustering:
             v_mode = st.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
         else:
             v_mode = "Show All"
             
-        # --- POPULATE SIDEBAR FILTERS ---
         with placeholder_filters:
             with st.expander("🔍 Filter Base Map", expanded=False):
                 show_base_cols = st.checkbox("Show Brands (Dots)", True)
