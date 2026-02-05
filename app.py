@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import io
 import pickle
+import re
 
 # --- SAFE IMPORT ---
 try:
@@ -31,6 +32,8 @@ st.markdown("""
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
+        .status-ok { color: #2e7d32; font-weight: bold; font-size: 0.9em; }
+        .status-err { color: #c62828; font-weight: bold; font-size: 0.9em; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -42,22 +45,36 @@ if 'universe_size' not in st.session_state: st.session_state.universe_size = 258
 if 'messages' not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": "Ask me about **Mindsets** or **Population Reach**."}]
 
 # --- HELPERS ---
+def normalize_strings(s_index):
+    """Normalize strings for fuzzy matching: lowercase, strip, remove punctuation"""
+    return s_index.astype(str).str.lower().str.replace(r'[^\w\s]', '', regex=True).str.strip()
+
 def clean_df(df_input, is_core=False):
+    """Robust data cleaning: Handles commas, %, $, - and sets index"""
     label_col = df_input.columns[0]
     df = df_input.set_index(label_col)
+    
+    # Aggressive cleaning of numeric columns
     for col in df.columns:
         if df[col].dtype == 'object':
-            df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
+            # Remove commas, $, %, and replace '-' with 0
+            df[col] = df[col].astype(str).str.replace(r'[,$%]', '', regex=True)
+            df[col] = df[col].str.replace(r'^\s*-\s*$', '0', regex=True)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
     df = df.fillna(0)
     
     if is_core:
-        universe_mask = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
-        if any(universe_mask):
-            st.session_state.universe_size = float(df[universe_mask].iloc[0].sum())
+        # Try to find Universe row for sizing
+        u_idx = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
+        if any(u_idx):
+            st.session_state.universe_size = float(df[u_idx].iloc[0].sum())
     
-    df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+    # Filter out metadata rows
+    mask = ~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
-    return df[valid_cols]
+    
+    return df.loc[mask, valid_cols]
 
 def rotate_coords(df_to_rot, angle_deg):
     theta = np.radians(angle_deg)
@@ -69,21 +86,19 @@ def rotate_coords(df_to_rot, angle_deg):
     df_new['x'], df_new['y'] = rotated[:, 0], rotated[:, 1]
     return df_new
 
-def normalize_strings(s_index):
-    return s_index.astype(str).str.strip().str.lower()
-
 # ==========================================
 # DATA PROCESSING ENGINE
 # ==========================================
 def process_data(uploaded_file, passive_files, passive_configs):
     try:
-        # FIX: Rewind file pointer
         uploaded_file.seek(0)
         raw_data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         df_math_ready = clean_df(raw_data, is_core=True)
+        # Keep only rows with data
         df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
         
         if not df_math.empty:
+            # 1. CORE SVD MAP
             N = df_math.values; matrix_sum = N.sum()
             if matrix_sum == 0: return
             P = N / matrix_sum; r = P.sum(axis=1); c = P.sum(axis=0); E = np.outer(r,c)
@@ -99,51 +114,74 @@ def process_data(uploaded_file, passive_files, passive_configs):
             st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
             st.session_state.processed_data = True
 
-            # Process Passives
+            # 2. PASSIVE LAYER PROJECTION
             pass_list = []
-            for cfg in passive_configs:
+            
+            # Normalized Core Names for Matching
+            core_cols_norm = normalize_strings(df_math.columns)
+            core_idx_norm = normalize_strings(df_math.index)
+            
+            # Mappers: Normalized Name -> Integer Index
+            col_mapper = {name: i for i, name in enumerate(core_cols_norm)}
+            row_mapper = {name: i for i, name in enumerate(core_idx_norm)}
+
+            for i, cfg in enumerate(passive_configs):
                 pf = cfg['file']
-                # FIX: Rewind Passive File Pointer
-                pf.seek(0)
+                pf.seek(0) # Critical: Rewind
                 p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
                 p_c = clean_df(p_raw, is_core=False)
                 
-                p_cols_norm = normalize_strings(p_c.columns); core_cols_norm = normalize_strings(df_math.columns)
-                common_b_indices = [i for i, x in enumerate(p_cols_norm) if x in list(core_cols_norm)]
+                # Check Overlaps
+                p_cols_norm = normalize_strings(p_c.columns)
+                p_idx_norm = normalize_strings(p_c.index)
                 
-                p_idx_norm = normalize_strings(p_c.index); core_idx_norm = normalize_strings(df_math.index)
-                common_r_indices = [i for i, x in enumerate(p_idx_norm) if x in list(core_idx_norm)]
+                common_b_count = sum(1 for x in p_cols_norm if x in col_mapper)
+                common_r_count = sum(1 for x in p_idx_norm if x in row_mapper)
                 
-                is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else len(common_b_indices) > len(common_r_indices)
+                # Determine Mode
+                is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else common_b_count > common_r_count
+                
                 proj = np.array([]); p_aligned = pd.DataFrame()
+                status_msg = "❌ No Match"
                 
-                if is_rows and common_b_indices:
-                    valid_cols = p_c.columns[common_b_indices]
-                    mapper = {x: i for i, x in enumerate(core_cols_norm)}
-                    p_aligned = pd.DataFrame(0, index=p_c.index, columns=df_math.columns)
-                    for col_name in valid_cols:
-                        nm = col_name.strip().lower()
-                        if nm in mapper: p_aligned[df_math.columns[mapper[nm]]] = p_c[col_name]
-                    
-                    if not p_aligned.empty:
+                if is_rows:
+                    # PROJECT AS ROWS (Stars) -> Needs Shared Columns (Brands)
+                    if common_b_count > 0:
+                        status_msg = f"✅ Aligned by {common_b_count} Brands"
+                        # Align Passive Columns to Core Columns
+                        p_aligned = pd.DataFrame(0.0, index=p_c.index, columns=df_math.columns)
+                        # Iterate through passive columns and map to core
+                        for orig_col, norm_col in zip(p_c.columns, p_cols_norm):
+                            if norm_col in col_mapper:
+                                target_col_idx = col_mapper[norm_col]
+                                p_aligned.iloc[:, target_col_idx] = p_c[orig_col].values
+                        
+                        # Project
+                        # Formula: Row_Coords = R_new * V * S^-1
+                        # Simplified: Data * Col_Coords / Eigenvals
                         proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
-                
-                elif not is_rows and common_r_indices:
-                    valid_rows = p_c.index[common_r_indices]
-                    mapper = {x: i for i, x in enumerate(core_idx_norm)}
-                    p_aligned = pd.DataFrame(0, index=df_math.index, columns=p_c.columns)
-                    for row_name in valid_rows:
-                        nm = row_name.strip().lower()
-                        if nm in mapper: p_aligned.loc[df_math.index[mapper[nm]]] = p_c.loc[row_name]
-                    
-                    if not p_aligned.empty:
+                else:
+                    # PROJECT AS COLUMNS (Diamonds) -> Needs Shared Rows (Attributes)
+                    if common_r_count > 0:
+                        status_msg = f"✅ Aligned by {common_r_count} Rows"
+                        # Align Passive Rows to Core Rows
+                        p_aligned = pd.DataFrame(0.0, index=df_math.index, columns=p_c.columns)
+                        for orig_row, norm_row in zip(p_c.index, p_idx_norm):
+                            if norm_row in row_mapper:
+                                target_row_idx = row_mapper[norm_row]
+                                p_aligned.iloc[target_row_idx, :] = p_c.loc[orig_row].values
+                        
+                        # Project Transposed
                         proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
-                        
+                
                 if not p_aligned.empty and proj.size > 0:
-                    res['LayerName'] = cfg['name']; res['Visible'] = cfg['show']
+                    res['LayerName'] = cfg['name']; res['Visible'] = cfg['show']; res['Status'] = status_msg
                     pass_list.append(res)
+                else:
+                    # Append placeholder to show error in sidebar
+                    pass_list.append({'LayerName': cfg['name'], 'Status': "⚠️ Alignment Failed", 'Label': [], 'Visible': False})
             
             st.session_state.passive_data = pass_list
     except Exception as e:
@@ -181,15 +219,21 @@ with tab1:
         uploaded_file = st.file_uploader("Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
         passive_files = st.file_uploader("Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
         
-        # Capture config for processing
         passive_configs = []
         if passive_files:
             st.subheader("⚙️ Layer Manager")
-            for pf in passive_files:
-                with st.expander(f"{pf.name}", expanded=False):
+            for i, pf in enumerate(passive_files):
+                # Retrieve status if processed
+                stat_txt = ""
+                if st.session_state.processed_data and i < len(st.session_state.passive_data):
+                    pd_info = st.session_state.passive_data[i]
+                    stat_txt = pd_info.get('Status', '')
+                
+                with st.expander(f"{pf.name} {stat_txt}", expanded=False):
                     p_name = st.text_input("Layer Name", pf.name, key=f"n_{pf.name}")
                     p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
                     p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{pf.name}")
+                    if "⚠️" in stat_txt: st.error("Check column names for matches.")
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
 
         # TRIGGER PROCESSING
@@ -234,7 +278,7 @@ with tab1:
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_a = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
-        df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source]
+        df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source if isinstance(l, pd.DataFrame) and 'x' in l.columns]
         
         mindset_report = []
         df_a['IsCore'] = True
@@ -287,7 +331,7 @@ with tab1:
                 df_a = df_a[df_a['Label'].isin(sel_rows)]
             
             for i, layer in enumerate(df_p_list):
-                if not layer.empty and layer['Visible'].iloc[0]:
+                if not layer.empty and layer['Visible'].iloc[0] and 'Label' in layer.columns:
                     with st.expander(f"🔍 Filter {layer['LayerName'].iloc[0]}", expanded=False):
                         l_opts = sorted(layer['Label'].unique())
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
