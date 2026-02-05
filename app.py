@@ -108,7 +108,9 @@ with tab1:
                 with st.expander(f"{pf.name}", expanded=False):
                     p_name = st.text_input("Layer Name", pf.name, key=f"n_{pf.name}")
                     p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
-                    passive_configs.append({"file": pf, "name": p_name, "show": p_show})
+                    # RESTORED: Map As Selector
+                    p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{pf.name}")
+                    passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
 
         st.divider()
         st.header("🏷️ Map Controls")
@@ -150,21 +152,37 @@ with tab1:
                 st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
                 st.session_state.processed_data = True
 
-                # Process Passives (Using Configs)
+                # Process Passives (With Logic Branching)
                 pass_list = []
                 for cfg in passive_configs:
                     pf = cfg['file']
                     p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
                     p_c = clean_df(p_raw)
-                    common_b = list(set(p_c.columns) & set(df_math.columns))
-                    if common_b:
-                        p_aligned = p_c[common_b].reindex(columns=df_math.columns).fillna(0)
-                        proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
-                        res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_aligned.index; res['Weight'] = p_c.sum(axis=1).values
-                        res['LayerName'] = cfg['name'] 
-                        res['Visible'] = cfg['show']   
-                        res['Shape'] = 'star'
-                        pass_list.append(res)
+                    
+                    common_brands = list(set(p_c.columns) & set(df_math.columns))
+                    common_attrs = list(set(p_c.index) & set(df_math.index))
+                    
+                    # Logic Check
+                    is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else len(common_brands) > len(common_attrs)
+                    
+                    if is_rows:
+                        # Map as Rows (Stars) - Align to Columns
+                        if common_brands:
+                            p_aligned = p_c[common_brands].reindex(columns=df_math.columns).fillna(0)
+                            proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
+                            res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_aligned.index; res['Weight'] = p_c.sum(axis=1).values
+                            res['Shape'] = 'star'
+                    else:
+                        # Map as Columns (Diamonds) - Align to Rows
+                        if common_attrs:
+                            p_aligned = p_c.reindex(df_math.index).fillna(0)
+                            proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
+                            res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_aligned.columns; res['Weight'] = p_c.sum(axis=0).values
+                            res['Shape'] = 'diamond'
+                            
+                    res['LayerName'] = cfg['name'] 
+                    res['Visible'] = cfg['show']   
+                    pass_list.append(res)
                 st.session_state.passive_data = pass_list
         except Exception as e: st.error(f"Error: {e}")
 
@@ -179,6 +197,7 @@ with tab1:
         for l in df_p_list: l['IsCore'] = True
 
         if enable_clustering and HAS_SKLEARN:
+            # 1. Pool data
             pool = pd.concat([df_a[['x','y']]] + [l[['x','y']] for l in df_p_list if not l.empty])
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
             centroids = kmeans.cluster_centers_
@@ -248,14 +267,12 @@ with tab1:
                     if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
                     sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                     res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                    # CLEAN LEGEND: Group attributes under Mindset Name
                     fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], name=f"Mindset {cid+1}", legendgroup=f"M{cid+1}", showlegend=True))
                     if lbl_rows:
                         for _, r in sub.iterrows():
                             color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
                             if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
             else:
-                # RAW MAP STATE
                 res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
                 fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], name='Attributes'))
                 if lbl_rows:
@@ -265,24 +282,22 @@ with tab1:
         # Render Passives
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
+                l_shape = layer['Shape'].iloc[0] # Star or Diamond
+                l_name = layer['LayerName'].iloc[0]
+                
                 if enable_clustering:
                     for cid in sorted(layer['Cluster'].unique()):
                         if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
                         sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                         res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                        
-                        # CLEAN LEGEND: Hide individual layer name, merge into Mindset Group
-                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol='diamond', color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], name=f"Mindset {cid+1}", legendgroup=f"M{cid+1}", showlegend=False))
-                        
+                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], name=f"Mindset {cid+1}", legendgroup=f"M{cid+1}", showlegend=False))
                         if lbl_passive:
                             for _, r in sub.iterrows():
                                 color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
                                 if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
                 else:
-                    # RAW MAP STATE (Passives)
                     res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
-                    l_name = layer['LayerName'].iloc[0]
-                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol='diamond', color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], name=l_name))
+                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], name=l_name))
                     if lbl_passive:
                         for _, r in layer.iterrows():
                             color, opac = get_so(r['Label'], '#555'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
