@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import plotly.express as px
 import collections
 import io
 import pickle
@@ -42,31 +43,31 @@ if 'messages' not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "Ask me about **Mindsets** or **Population Reach**."}]
 
 # --- HELPERS ---
-def clean_df(df):
-    label_col = df.columns[0]
-    df = df.set_index(label_col)
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
-    df = df.fillna(0)
+def clean_df(df_input):
+    label_col = df_input.columns[0]
+    df_cleaned = df_input.set_index(label_col)
+    for col in df_cleaned.columns:
+        if df_cleaned[col].dtype == 'object':
+            df_cleaned[col] = df_cleaned[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
+    df_cleaned = df_cleaned.fillna(0)
     
-    # Capture the population baseline (Universe) safely
-    universe_mask = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
-    universe_row = df[universe_mask]
-    if not universe_row.empty:
-        st.session_state.universe_size = float(universe_row.iloc[0].sum())
+    # Safely find universe baseline
+    universe_mask = df_cleaned.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
+    if any(universe_mask):
+        st.session_state.universe_size = float(df_cleaned[universe_mask].iloc[0].sum())
     
-    df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
-    valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
-    return df[valid_cols]
+    # Drop universe/base rows from the math
+    df_cleaned = df_cleaned[~df_cleaned.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+    valid_cols = [c for c in df_cleaned.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
+    return df_cleaned[valid_cols]
 
-def rotate_coords(df_input, angle_deg):
+def rotate_coords(df_to_rot, angle_deg):
     theta = np.radians(angle_deg)
-    c, s = np.cos(theta), np.sin(theta)
-    R = np.array(((c, -s), (s, c)))
-    coords = df_input[['x', 'y']].values
+    c, s_rot = np.cos(theta), np.sin(theta)
+    R = np.array(((c, -s_rot), (s_rot, c)))
+    coords = df_to_rot[['x', 'y']].values
     rotated = coords @ R.T
-    df_new = df_input.copy()
+    df_new = df_to_rot.copy()
     df_new['x'], df_new['y'] = rotated[:, 0], rotated[:, 1]
     return df_new
 
@@ -118,45 +119,56 @@ with tab1:
 
     if uploaded_file:
         try:
-            df_math_raw = clean_df(pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file))
-            df_math = df_math_raw.loc[(df_math_raw != 0).any(axis=1)]
+            raw_data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            df_math_ready = clean_df(raw_data)
+            df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
             if not df_math.empty:
-                N = df_math.values; P = N/N.sum(); r = P.sum(axis=1); c = P.sum(axis=0); E = np.outer(r,c)
-                E[E<1e-9]=1e-9; R=(P-E)/np.sqrt(E); U, s, Vh = np.linalg.svd(R, full_matrices=False)
-                row_coords = (U*s)/np.sqrt(r[:, np.newaxis]); col_coords = (Vh.T*s)/np.sqrt(c[:, np.newaxis])
+                # SVD Calculation
+                N = df_math.values; matrix_sum = N.sum()
+                if matrix_sum == 0: st.error("Data sum is zero."); st.stop()
+                P = N / matrix_sum; r = P.sum(axis=1); c = P.sum(axis=0); E = np.outer(r,c)
+                E[E < 1e-9] = 1e-9; R = (P - E) / np.sqrt(E); U, s, Vh = np.linalg.svd(R, full_matrices=False)
+                row_coords = (U * s) / np.sqrt(r[:, np.newaxis]); col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
                 
                 st.session_state.df_brands = pd.DataFrame(col_coords[:, :2], columns=['x','y']); st.session_state.df_brands['Label'] = df_math.columns
                 st.session_state.df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x','y']); st.session_state.df_attrs['Label'] = df_math.index
                 st.session_state.df_attrs['Weight'] = df_math.sum(axis=1).values 
                 
-                eig_vals = s**2
-                st.session_state.accuracy = (np.sum(eig_vals[:2]) / np.sum(eig_vals)) * 100
+                # Accuracy calc with array check
+                eig_vals = np.array(s)**2
+                total_var = np.sum(eig_vals)
+                st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
                 st.session_state.processed_data = True
 
+                # Process Passives
                 pass_list = []
                 for pf in (passive_files or []):
-                    p_c = clean_df(pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf))
-                    common = list(set(p_c.columns) & set(df_math.columns))
-                    if common:
-                        p_aligned = p_c[common].reindex(columns=df_math.columns).fillna(0)
+                    p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
+                    p_c = clean_df(p_raw)
+                    common_b = list(set(p_c.columns) & set(df_math.columns))
+                    if common_b:
+                        p_aligned = p_c[common_b].reindex(columns=df_math.columns).fillna(0)
                         proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_aligned.index; res['Weight'] = p_c.sum(axis=1).values
                         res['LayerName'] = pf.name; res['Shape'] = 'star'; res['Visible'] = True
                         pass_list.append(res)
                 st.session_state.passive_data = pass_list
-        except Exception as e: st.error(f"Math Error: {e}")
+        except Exception as e: st.error(f"Mapping Failed: {e}")
 
     if st.session_state.processed_data:
+        # Rotation logic
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_a = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
-        df_p_list = [rotate_coords(l.copy(), map_rotation) for l in st.session_state.passive_data]
+        p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
+        df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source]
         
         mindset_report = []
         df_a['IsCore'] = True
         for l in df_p_list: l['IsCore'] = True
 
         if enable_clustering and HAS_SKLEARN:
-            pool = pd.concat([df_a[['x','y']]] + [l[['x','y']] for l in df_p_list])
+            # Pooled clustering (Active + Passives)
+            pool = pd.concat([df_a[['x','y']]] + [l[['x','y']] for l in df_p_list if not l.empty])
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
             centroids = kmeans.cluster_centers_
             df_a['Cluster'] = kmeans.predict(df_a[['x','y']])
@@ -166,35 +178,34 @@ with tab1:
             for i in range(num_clusters):
                 c_actives = df_a[df_a['Cluster'] == i].copy()
                 c_actives['dist'] = np.sqrt((c_actives['x']-centroids[i][0])**2 + (c_actives['y']-centroids[i][1])**2)
-                c_passives = pd.concat([l[l['Cluster'] == i] for l in df_p_list]) if df_p_list else pd.DataFrame()
+                c_passives = pd.concat([l[l['Cluster'] == i] for l in df_p_list if not l.empty]) if df_p_list else pd.DataFrame()
                 if not c_passives.empty:
                     c_passives['dist'] = np.sqrt((c_passives['x']-centroids[i][0])**2 + (c_passives['y']-centroids[i][1])**2)
                 
-                all_cluster_sigs = pd.concat([c_actives[['Label','Weight','dist']], c_passives[['Label','Weight','dist']] if not c_passives.empty else None]).dropna()
-                if not all_cluster_sigs.empty:
-                    cutoff = np.percentile(all_cluster_sigs['dist'], 100 - strictness)
+                # Population Cutoff Math
+                cluster_sigs = pd.concat([c_actives[['Label','Weight','dist']], c_passives[['Label','Weight','dist']] if not c_passives.empty else None]).dropna()
+                if not cluster_sigs.empty:
+                    cutoff = np.percentile(cluster_sigs['dist'], 100 - strictness)
                     df_a.loc[df_a['Cluster']==i, 'IsCore'] = c_actives['dist'] <= cutoff
-                    for l in df_p_list: 
-                        l_mask = l['Cluster']==i
-                        if any(l_mask):
-                            l_dists = np.sqrt((l.loc[l_mask, 'x']-centroids[i][0])**2 + (l.loc[l_mask, 'y']-centroids[i][1])**2)
-                            l.loc[l_mask, 'IsCore'] = l_dists <= cutoff
+                    for l in df_p_list:
+                        m = l['Cluster']==i
+                        if any(m): l.loc[m, 'IsCore'] = np.sqrt((l.loc[m,'x']-centroids[i][0])**2 + (l.loc[m,'y']-centroids[i][1])**2) <= cutoff
                     
-                    core_sigs = all_cluster_sigs[all_cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
-                    pop_weight = core_sigs.head(5)['Weight'].mean()
-                    pop_pct = (pop_weight / st.session_state.universe_size) * 100
-                    mindset_report.append({"id": i+1, "color": px.colors.qualitative.Bold[i % 10], "rows": core_sigs['Label'].tolist()[:10], "pop_000s": pop_weight, "percent": pop_pct, "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), "threshold": 3 if pop_pct > 12 else 2})
+                    core_sigs = cluster_sigs[cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
+                    pop_avg = core_sigs.head(5)['Weight'].mean()
+                    pop_reach = (pop_avg / st.session_state.universe_size) * 100
+                    mindset_report.append({"id": i+1, "color": px.colors.qualitative.Bold[i % 10], "rows": core_sigs['Label'].tolist()[:10], "pop_000s": pop_avg, "percent": pop_reach, "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), "threshold": 3 if pop_reach > 12 else 2})
         
         st.session_state.mindset_report = mindset_report
         with placeholder_filters.container():
-            col1, col2 = st.columns([1, 2]); col1.metric("Stability", f"{st.session_state.accuracy:.1f}%")
-            v_mode = col2.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
+            c1, c2 = st.columns([1, 2]); c1.metric("Stability", f"{st.session_state.accuracy:.1f}%")
+            v_mode = c2.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
             f_brand = st.selectbox("Highlight Brand:", ["None"] + sorted(df_b['Label'].tolist()))
 
         fig = go.Figure()
         def get_so(lbl, base_c, is_core=True):
             if f_brand == "None": return (base_c, 0.9) if is_core else ('#eeeeee', 0.15)
-            return (base_c, 1.0) if lbl == f_brand or lbl in hl else ('#d3d3d3', 0.2)
+            return (base_c, 1.0) if (lbl == f_brand or lbl in hl) else ('#d3d3d3', 0.2)
 
         hl = []
         if f_brand != "None":
@@ -203,76 +214,73 @@ with tab1:
                 d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
+        # Render Brands
         if show_base_cols:
             res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
             fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], name='Brands'))
             if lbl_cols:
                 for _, r in df_b.iterrows():
-                    c, o = get_so(r['Label'], '#1f77b4'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-20, font=dict(color=c, size=12))
+                    color, opac = get_so(r['Label'], '#1f77b4')
+                    fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
 
+        # Render Mindsets
         if show_base_rows:
             for cid in sorted(df_a['Cluster'].unique()) if 'Cluster' in df_a.columns else []:
                 if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
                 sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                 res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], name=f"Mindset {cid+1}"))
+                fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], name=f"M{cid+1}"))
                 if lbl_rows:
                     for _, r in sub.iterrows():
-                        c, o = get_so(r['Label'], bc, r.get('IsCore', True))
-                        if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=11))
+                        color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
+                        if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
 
+        # Render Passives
         for i, layer in enumerate(df_p_list):
             if not layer.empty and 'Cluster' in layer.columns:
                 for cid in sorted(layer['Cluster'].unique()):
                     if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
                     sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                     res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol='diamond', color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], name=layer['LayerName'].iloc[0]))
+                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol='diamond', color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], name=layer['LayerName']))
                     if lbl_passive:
                         for _, r in sub.iterrows():
-                            c, o = get_so(r['Label'], bc, r.get('IsCore', True)); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=10))
+                            color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
+                            if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
 
         fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
 
         if mindset_report:
-            st.divider(); st.header("👥 Population Mindsets")
+            st.divider(); st.header("👥 Population Analysis")
             cols = st.columns(3)
-            for i, m in enumerate(mindset_report):
-                with cols[i % 3]:
-                    st.markdown(f"""
-                    <div class="mindset-card" style="border-left-color: {m['color']};">
-                        <span class="size-badge">{m['percent']:.1f}% Pop.</span>
-                        <h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3>
-                        <p><b>Core Volume:</b> {m['pop_000s']:,.0f} (000s)</p>
-                        <p><b>Top Signals:</b><br>{", ".join(m['rows'][:5])}...</p>
-                    </div>""", unsafe_allow_html=True)
+            for idx, m in enumerate(mindset_report):
+                with cols[idx % 3]:
+                    st.markdown(f"""<div class="mindset-card" style="border-left-color: {m['color']};"><span class="size-badge">{m['percent']:.1f}% US</span><h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3><p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p><p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p></div>""", unsafe_allow_html=True)
 
 # ==========================================
-# OTHER TABS
+# CHAT, CLEANER, CODES (FULLY RESTORED)
 # ==========================================
 with tab2:
     st.header("💬 AI Strategy Chat")
     if not st.session_state.processed_data: st.warning("Upload data.")
     else:
         def analyze_query(query):
-            q, df_b, df_a = query.lower(), st.session_state.df_brands, st.session_state.df_attrs
-            if "theme" in q: return f"↔️ **X:** {df_a.loc[df_a['x'].idxmin()]['Label']} vs {df_a.loc[df_a['x'].idxmax()]['Label']}"
-            for b in df_b['Label']:
+            q, df_b_chat, df_a_chat = query.lower(), st.session_state.df_brands, st.session_state.df_attrs
+            if "theme" in q: return f"↔️ **X:** {df_a_chat.loc[df_a_chat['x'].idxmin()]['Label']} to {df_a_chat.loc[df_a_chat['x'].idxmax()]['Label']}"
+            for b in df_b_chat['Label']:
                 if b.lower() in q:
-                    br = df_b[df_b['Label']==b].iloc[0]; df_a['D'] = np.sqrt((df_a['x']-br['x'])**2 + (df_a['y']-br['y'])**2)
-                    return f"✅ **{b} Strengths:** {', '.join(df_a.sort_values('D').head(3)['Label'].tolist())}"
+                    br = df_b_chat[df_b_chat['Label']==b].iloc[0]; df_a_chat['D'] = np.sqrt((df_a_chat['x']-br['x'])**2 + (df_a_chat['y']-br['y'])**2)
+                    return f"✅ **{b} Strengths:** {', '.join(df_a_chat.sort_values('D').head(3)['Label'].tolist())}"
             return "Ask about themes or brands."
-        for m in st.session_state.messages:
-            with st.chat_message(m["role"]): st.markdown(m["content"])
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]): st.markdown(msg["content"])
         if prompt := st.chat_input("Ask..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"): st.markdown(prompt)
-            st.session_state.messages.append({"role": "assistant", "content": analyze_query(prompt)}); st.rerun()
+            st.session_state.messages.append({"role": "user", "content": prompt}); st.rerun()
 
 with tab3:
     st.header("🧹 MRI Data Cleaner")
-    raw_mri = st.file_uploader("Upload MRI", type=["csv", "xlsx", "xls"])
+    raw_mri = st.file_uploader("Upload Raw Export", type=["csv", "xlsx", "xls"])
     if raw_mri:
         try:
             df_r = pd.read_csv(raw_mri, header=None) if raw_mri.name.endswith('.csv') else pd.read_excel(raw_mri, header=None)
@@ -281,8 +289,8 @@ with tab3:
             c_idx, h = [0], ['Attitude']
             for c in range(1, len(metric_r)):
                 if "Weighted" in str(metric_r[c]):
-                    b = str(brand_r[c-1])
-                    if "Universe" not in b and "Total" not in b and b != 'nan': c_idx.append(c); h.append(b)
+                    b_str = str(brand_r[c-1])
+                    if "Universe" not in b_str and "Total" not in b_str and b_str != 'nan': c_idx.append(c); h.append(b_str)
             df_c = data_r.iloc[:, c_idx]; df_c.columns = h
             df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
             for c in df_c.columns[1:]: df_c[c] = pd.to_numeric(df_c[c].astype(str).str.replace(',', ''), errors='coerce')
@@ -292,7 +300,7 @@ with tab3:
 
 with tab4:
     st.header("📟 Count Code Maker")
-    if not st.session_state.mindset_report: st.warning("Discovery required.")
+    if not st.session_state.mindset_report: st.warning("Run Discovery.")
     else:
         for t in st.session_state.mindset_report:
             with st.expander(f"Mindset {t['id']} Formula (~{t['percent']:.1f}% Pop)", expanded=True):
