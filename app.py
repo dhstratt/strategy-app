@@ -45,25 +45,26 @@ if 'messages' not in st.session_state:
 # --- HELPERS ---
 def clean_df(df_input):
     label_col = df_input.columns[0]
-    df = df_input.set_index(label_col)
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = df[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
-    df = df.fillna(0)
+    df_cleaned = df_input.set_index(label_col)
+    for col in df_cleaned.columns:
+        if df_cleaned[col].dtype == 'object':
+            df_cleaned[col] = df_cleaned[col].astype(str).str.replace(',', '').apply(pd.to_numeric, errors='coerce')
+    df_cleaned = df_cleaned.fillna(0)
     
     # Safely find universe baseline
-    universe_mask = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
+    universe_mask = df_cleaned.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
     if any(universe_mask):
-        st.session_state.universe_size = float(df[universe_mask].iloc[0].sum())
+        st.session_state.universe_size = float(df_cleaned[universe_mask].iloc[0].sum())
     
-    df = df[~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
-    valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
-    return df[valid_cols]
+    # Drop universe/base rows from the math
+    df_cleaned = df_cleaned[~df_cleaned.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)]
+    valid_cols = [c for c in df_cleaned.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
+    return df_cleaned[valid_cols]
 
 def rotate_coords(df_to_rot, angle_deg):
     theta = np.radians(angle_deg)
-    c, s = np.cos(theta), np.sin(theta)
-    R = np.array(((c, -s), (s, c)))
+    c, s_rot = np.cos(theta), np.sin(theta)
+    R = np.array(((c, -s_rot), (s_rot, c)))
     coords = df_to_rot[['x', 'y']].values
     rotated = coords @ R.T
     df_new = df_to_rot.copy()
@@ -102,26 +103,11 @@ with tab1:
         uploaded_file = st.file_uploader("Upload Core Data", type=["csv", "xlsx", "xls"], key="active")
         passive_files = st.file_uploader("Upload Passive Layers", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="passive")
         
-        # --- LAYER VISIBILITY (RESTORED) ---
         st.divider()
-        st.header("🎨 Layer Visibility")
-        col_v1, col_v2 = st.columns(2)
-        show_base_cols = col_v1.checkbox("Brands (Dots)", True)
-        show_base_rows = col_v2.checkbox("Mindsets (Dots)", True)
-        
-        passive_configs = []
-        if passive_files:
-            st.subheader("Passive Layers")
-            for pf in passive_files:
-                # We assume all uploaded passives are visible by default for simplicity in reprocessing
-                # but we can add toggles if needed. For now, let's process them all.
-                pass 
-
-        st.divider()
-        st.header("🏷️ Label Controls")
-        lbl_cols = st.checkbox("Brand Labels", True)
-        lbl_rows = st.checkbox("Mindset Labels", True)
-        lbl_passive = st.checkbox("Passive Labels", True)
+        st.header("🏷️ Label Manager")
+        lbl_cols = st.checkbox("Show Brand Labels", True)
+        lbl_rows = st.checkbox("Show Mindset Labels", True)
+        lbl_passive = st.checkbox("Show Passive Labels", True)
 
         st.divider()
         st.header("⚗️ Mindset Precision")
@@ -148,7 +134,7 @@ with tab1:
                 st.session_state.df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x','y']); st.session_state.df_attrs['Label'] = df_math.index
                 st.session_state.df_attrs['Weight'] = df_math.sum(axis=1).values 
                 
-                # Accuracy calc with array check
+                # Accuracy calc
                 eig_vals = np.array(s)**2
                 total_var = np.sum(eig_vals)
                 st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
@@ -170,7 +156,6 @@ with tab1:
         except Exception as e: st.error(f"Mapping Failed: {e}")
 
     if st.session_state.processed_data:
-        # Rotation logic
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_a = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
@@ -181,7 +166,6 @@ with tab1:
         for l in df_p_list: l['IsCore'] = True
 
         if enable_clustering and HAS_SKLEARN:
-            # Pooled clustering (Active + Passives)
             pool = pd.concat([df_a[['x','y']]] + [l[['x','y']] for l in df_p_list if not l.empty])
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
             centroids = kmeans.cluster_centers_
@@ -196,7 +180,7 @@ with tab1:
                 if not c_passives.empty:
                     c_passives['dist'] = np.sqrt((c_passives['x']-centroids[i][0])**2 + (c_passives['y']-centroids[i][1])**2)
                 
-                # Population Cutoff Math
+                # Sizing Logic
                 cluster_sigs = pd.concat([c_actives[['Label','Weight','dist']], c_passives[['Label','Weight','dist']] if not c_passives.empty else None]).dropna()
                 if not cluster_sigs.empty:
                     cutoff = np.percentile(cluster_sigs['dist'], 100 - strictness)
@@ -229,38 +213,42 @@ with tab1:
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
         # Render Brands
-        if show_base_cols:
-            res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
-            fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], name='Brands'))
-            if lbl_cols:
-                for _, r in df_b.iterrows():
-                    color, opac = get_so(r['Label'], '#1f77b4')
-                    fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
+        show_base_cols = True # Defaults
+        show_base_rows = True
+        
+        res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
+        fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], name='Brands'))
+        if lbl_cols:
+            for _, r in df_b.iterrows():
+                color, opac = get_so(r['Label'], '#1f77b4')
+                fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
 
         # Render Mindsets
-        if show_base_rows:
-            for cid in sorted(df_a['Cluster'].unique()) if 'Cluster' in df_a.columns else []:
-                if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
-                sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
-                res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], name=f"M{cid+1}"))
-                if lbl_rows:
-                    for _, r in sub.iterrows():
-                        color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
-                        if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+        for cid in sorted(df_a['Cluster'].unique()) if 'Cluster' in df_a.columns else []:
+            if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
+            sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
+            res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
+            fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], name=f"M{cid+1}"))
+            if lbl_rows:
+                for _, r in sub.iterrows():
+                    color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
+                    if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
 
-        # Render Passives
+        # Render Passives (Corrected Name)
         for i, layer in enumerate(df_p_list):
             if not layer.empty and 'Cluster' in layer.columns:
                 for cid in sorted(layer['Cluster'].unique()):
                     if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
                     sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                     res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol='diamond', color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], name=layer['LayerName']))
+                    
+                    # FIX: Use .iloc[0] for name string to prevent ValueError
+                    layer_name_str = layer['LayerName'].iloc[0] if 'LayerName' in layer.columns else f"Passive {i+1}"
+                    
+                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol='diamond', color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], name=layer_name_str))
                     if lbl_passive:
                         for _, r in sub.iterrows():
-                            color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
-                            if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
+                            color, opac = get_so(r['Label'], bc, r.get('IsCore', True)); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
 
         fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
