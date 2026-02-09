@@ -43,6 +43,9 @@ if 'passive_data' not in st.session_state: st.session_state.passive_data = []
 if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
 if 'universe_size' not in st.session_state: st.session_state.universe_size = 258000.0
 if 'messages' not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": "Ask me about **Mindsets** or **Population Reach**."}]
+if 'df_brands' not in st.session_state: st.session_state.df_brands = pd.DataFrame()
+if 'df_attrs' not in st.session_state: st.session_state.df_attrs = pd.DataFrame()
+if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
 
 # --- HELPERS ---
 def normalize_strings(s_index):
@@ -51,8 +54,28 @@ def normalize_strings(s_index):
 
 def clean_df(df_input, is_core=False):
     """Robust data cleaning: Handles commas, %, $, - and sets index"""
-    label_col = df_input.columns[0]
-    df = df_input.set_index(label_col)
+    # Create a copy to avoid SettingWithCopy warnings
+    df = df_input.copy()
+    
+    # ---------------------------------------------------------
+    # NEW: AUTOMATIC PASSIVE LAYER CLEANING
+    # ---------------------------------------------------------
+    # Check if the first column (Labels) contains the specific suffix "_Any Agree"
+    label_col = df.columns[0]
+    if df[label_col].astype(str).str.contains('_Any Agree', na=False).any():
+        # st.toast(f"🧹 Auto-cleaning Passive Layer detected in {label_col}...", icon="🧼")
+        
+        # 1. Filter: Keep ONLY rows with the suffix (drops duplicate Base Map rows)
+        df = df[df[label_col].astype(str).str.contains('_Any Agree', na=False)]
+        
+        # 2. Clean: Remove the suffix
+        df[label_col] = df[label_col].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
+        
+        # 3. Sanitize: Remove extra quotes often found in exports
+        df[label_col] = df[label_col].astype(str).str.replace('"', '', regex=False)
+    # ---------------------------------------------------------
+
+    df = df.set_index(label_col)
     
     # Aggressive cleaning of numeric columns
     for col in df.columns:
@@ -448,6 +471,14 @@ with tab3:
                     if "Universe" not in b_str and "Total" not in b_str and b_str != 'nan': c_idx.append(c); h.append(b_str)
             df_c = data_r.iloc[:, c_idx]; df_c.columns = h
             df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
+            
+            # --- NEW AUTO-CLEAN LOGIC FOR PASSIVE LAYERS ---
+            if df_c['Attitude'].astype(str).str.contains('_Any Agree', na=False).any():
+                df_c = df_c[df_c['Attitude'].astype(str).str.contains('_Any Agree', na=False)]
+                df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
+                df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('"', '', regex=False)
+            # ------------------------------------------------
+            
             for c in df_c.columns[1:]: df_c[c] = pd.to_numeric(df_c[c].astype(str).str.replace(',', ''), errors='coerce')
             df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
             st.success("Cleaned!"); st.download_button("Download CSV", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv")
