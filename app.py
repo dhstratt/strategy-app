@@ -147,7 +147,7 @@ def process_data(uploaded_file, passive_files, passive_configs):
                 if is_rows:
                     # PROJECT AS ROWS (Stars) -> Needs Shared Columns (Brands)
                     if common_b_count > 0:
-                        status_msg = f"✅ Aligned by {common_b_count} Brands"
+                        status_msg = f"✅ Aligned by {common_b_count} Cols"
                         # Align Passive Columns to Core Columns
                         p_aligned = pd.DataFrame(0.0, index=p_c.index, columns=df_math.columns)
                         # Iterate through passive columns and map to core
@@ -258,9 +258,9 @@ with tab1:
         f_brand = "None"
         if st.session_state.processed_data:
             b_list = sorted(st.session_state.df_brands['Label'].tolist(), key=str.casefold)
-            f_brand = st.selectbox("Highlight Brand:", ["None"] + b_list)
+            f_brand = st.selectbox("Highlight Column:", ["None"] + b_list)
 
-        lbl_cols = st.checkbox("Brand Labels", True)
+        lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
         lbl_passive = st.checkbox("Passive Labels", True)
         
@@ -323,9 +323,9 @@ with tab1:
             
         with placeholder_filters:
             with st.expander("🔍 Filter Base Map", expanded=False):
-                show_base_cols = st.checkbox("Show Brands (Dots)", True)
+                show_base_cols = st.checkbox("Show Columns (Dots)", True)
                 show_base_rows = st.checkbox("Show Rows (Dots)", True)
-                sel_brands = st.multiselect("Visible Brands:", sorted(df_b['Label']), default=sorted(df_b['Label']))
+                sel_brands = st.multiselect("Visible Columns:", sorted(df_b['Label']), default=sorted(df_b['Label']))
                 sel_rows = st.multiselect("Visible Rows:", sorted(df_a['Label']), default=sorted(df_a['Label']))
                 df_b = df_b[df_b['Label'].isin(sel_brands)]
                 df_a = df_a[df_a['Label'].isin(sel_rows)]
@@ -343,7 +343,7 @@ with tab1:
             for i in range(num_clusters):
                 fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color=px.colors.qualitative.Bold[i % 10]), legendgroup=f"M{i+1}", showlegend=True, name=f"Mindset {i+1}"))
         else:
-            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Brands"))
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
             fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
             for l in df_p_list:
                 if not l.empty:
