@@ -29,11 +29,10 @@ st.markdown("""
             background-color: #f9f9f9; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
+        .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
-        .status-ok { color: #2e7d32; font-weight: bold; font-size: 0.9em; }
-        .status-err { color: #c62828; font-weight: bold; font-size: 0.9em; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -54,33 +53,20 @@ def normalize_strings(s_index):
 
 def clean_df(df_input, is_core=False):
     """Robust data cleaning: Handles commas, %, $, - and sets index"""
-    # Create a copy to avoid SettingWithCopy warnings
     df = df_input.copy()
     
-    # ---------------------------------------------------------
-    # NEW: AUTOMATIC PASSIVE LAYER CLEANING
-    # ---------------------------------------------------------
-    # Check if the first column (Labels) contains the specific suffix "_Any Agree"
+    # --- AUTO-CLEAN PASSIVE LAYER ---
     label_col = df.columns[0]
     if df[label_col].astype(str).str.contains('_Any Agree', na=False).any():
-        # st.toast(f"🧹 Auto-cleaning Passive Layer detected in {label_col}...", icon="🧼")
-        
-        # 1. Filter: Keep ONLY rows with the suffix (drops duplicate Base Map rows)
         df = df[df[label_col].astype(str).str.contains('_Any Agree', na=False)]
-        
-        # 2. Clean: Remove the suffix
         df[label_col] = df[label_col].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
-        
-        # 3. Sanitize: Remove extra quotes often found in exports
         df[label_col] = df[label_col].astype(str).str.replace('"', '', regex=False)
-    # ---------------------------------------------------------
+    # --------------------------------
 
     df = df.set_index(label_col)
     
-    # Aggressive cleaning of numeric columns
     for col in df.columns:
         if df[col].dtype == 'object':
-            # Remove commas, $, %, and replace '-' with 0
             df[col] = df[col].astype(str).str.replace(r'[,$%]', '', regex=True)
             df[col] = df[col].str.replace(r'^\s*-\s*$', '0', regex=True)
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -88,12 +74,10 @@ def clean_df(df_input, is_core=False):
     df = df.fillna(0)
     
     if is_core:
-        # Try to find Universe row for sizing
         u_idx = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
         if any(u_idx):
             st.session_state.universe_size = float(df[u_idx].iloc[0].sum())
     
-    # Filter out metadata rows
     mask = ~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
     
@@ -117,7 +101,6 @@ def process_data(uploaded_file, passive_files, passive_configs):
         uploaded_file.seek(0)
         raw_data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         df_math_ready = clean_df(raw_data, is_core=True)
-        # Keep only rows with data
         df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
         
         if not df_math.empty:
@@ -139,63 +122,43 @@ def process_data(uploaded_file, passive_files, passive_configs):
 
             # 2. PASSIVE LAYER PROJECTION
             pass_list = []
-            
-            # Normalized Core Names for Matching
             core_cols_norm = normalize_strings(df_math.columns)
             core_idx_norm = normalize_strings(df_math.index)
-            
-            # Mappers: Normalized Name -> Integer Index
             col_mapper = {name: i for i, name in enumerate(core_cols_norm)}
             row_mapper = {name: i for i, name in enumerate(core_idx_norm)}
 
             for i, cfg in enumerate(passive_configs):
                 pf = cfg['file']
-                pf.seek(0) # Critical: Rewind
+                pf.seek(0)
                 p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
                 p_c = clean_df(p_raw, is_core=False)
                 
-                # Check Overlaps
                 p_cols_norm = normalize_strings(p_c.columns)
                 p_idx_norm = normalize_strings(p_c.index)
                 
                 common_b_count = sum(1 for x in p_cols_norm if x in col_mapper)
                 common_r_count = sum(1 for x in p_idx_norm if x in row_mapper)
-                
-                # Determine Mode
                 is_rows = cfg["mode"] == "Rows (Stars)" if cfg["mode"] != "Auto" else common_b_count > common_r_count
                 
                 proj = np.array([]); p_aligned = pd.DataFrame()
                 status_msg = "❌ No Match"
                 
                 if is_rows:
-                    # PROJECT AS ROWS (Stars) -> Needs Shared Columns (Brands)
                     if common_b_count > 0:
                         status_msg = f"✅ Aligned by {common_b_count} Cols"
-                        # Align Passive Columns to Core Columns
                         p_aligned = pd.DataFrame(0.0, index=p_c.index, columns=df_math.columns)
-                        # Iterate through passive columns and map to core
                         for orig_col, norm_col in zip(p_c.columns, p_cols_norm):
                             if norm_col in col_mapper:
-                                target_col_idx = col_mapper[norm_col]
-                                p_aligned.iloc[:, target_col_idx] = p_c[orig_col].values
-                        
-                        # Project
-                        # Formula: Row_Coords = R_new * V * S^-1
-                        # Simplified: Data * Col_Coords / Eigenvals
+                                p_aligned.iloc[:, col_mapper[norm_col]] = p_c[orig_col].values
                         proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
                 else:
-                    # PROJECT AS COLUMNS (Diamonds) -> Needs Shared Rows (Attributes)
                     if common_r_count > 0:
                         status_msg = f"✅ Aligned by {common_r_count} Rows"
-                        # Align Passive Rows to Core Rows
                         p_aligned = pd.DataFrame(0.0, index=df_math.index, columns=p_c.columns)
                         for orig_row, norm_row in zip(p_c.index, p_idx_norm):
                             if norm_row in row_mapper:
-                                target_row_idx = row_mapper[norm_row]
-                                p_aligned.iloc[target_row_idx, :] = p_c.loc[orig_row].values
-                        
-                        # Project Transposed
+                                p_aligned.iloc[row_mapper[norm_row], :] = p_c.loc[orig_row].values
                         proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
                 
@@ -203,7 +166,6 @@ def process_data(uploaded_file, passive_files, passive_configs):
                     res['LayerName'] = cfg['name']; res['Visible'] = cfg['show']; res['Status'] = status_msg
                     pass_list.append(res)
                 else:
-                    # Append placeholder to show error in sidebar
                     pass_list.append({'LayerName': cfg['name'], 'Status': "⚠️ Alignment Failed", 'Label': [], 'Visible': False})
             
             st.session_state.passive_data = pass_list
@@ -246,12 +208,10 @@ with tab1:
         if passive_files:
             st.subheader("⚙️ Layer Manager")
             for i, pf in enumerate(passive_files):
-                # Retrieve status if processed
                 stat_txt = ""
                 if st.session_state.processed_data and i < len(st.session_state.passive_data):
                     pd_info = st.session_state.passive_data[i]
                     stat_txt = pd_info.get('Status', '')
-                
                 with st.expander(f"{pf.name} {stat_txt}", expanded=False):
                     p_name = st.text_input("Layer Name", pf.name, key=f"n_{pf.name}")
                     p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
@@ -259,10 +219,8 @@ with tab1:
                     if "⚠️" in stat_txt: st.error("Check column names for matches.")
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
 
-        # TRIGGER PROCESSING
         if uploaded_file: process_data(uploaded_file, passive_files, passive_configs)
 
-        # STABILITY INDICATOR
         if st.session_state.processed_data:
             st.divider()
             stab = st.session_state.accuracy
@@ -286,7 +244,6 @@ with tab1:
         lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
         lbl_passive = st.checkbox("Passive Labels", True)
-        
         placeholder_filters = st.container()
 
         st.divider()
@@ -329,10 +286,45 @@ with tab1:
                         m = l['Cluster']==i
                         if any(m): l.loc[m, 'IsCore'] = np.sqrt((l.loc[m,'x']-centroids[i][0])**2 + (l.loc[m,'y']-centroids[i][1])**2) <= cutoff
                     
+                    # --- SMART COUNT CODE ALGORITHM ---
                     core_sigs = cluster_sigs[cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
-                    pop_avg = core_sigs.head(5)['Weight'].mean()
-                    pop_pct = (pop_avg / st.session_state.universe_size) * 100
-                    mindset_report.append({"id": i+1, "color": px.colors.qualitative.Bold[i % 10], "rows": core_sigs['Label'].tolist()[:10], "pop_000s": pop_avg, "percent": pop_pct, "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), "threshold": 3 if pop_pct > 12 else 2})
+                    
+                    # 1. Determine Target Population (Avg of Top 5)
+                    target_pop = core_sigs.head(5)['Weight'].mean()
+                    pop_pct = (target_pop / st.session_state.universe_size) * 100
+                    
+                    # 2. Iterate to find best Code Length (5 to 15 items) that allows Majority Rule to match size
+                    best_k = 10
+                    best_diff = float('inf')
+                    
+                    for k in range(5, min(16, len(core_sigs) + 1)):
+                        # Proposed items
+                        k_items = core_sigs.head(k)
+                        sum_weights = k_items['Weight'].sum()
+                        # Strict Majority Rule (e.g., 3/5, 4/6, 4/7)
+                        thresh_k = (k // 2) + 1
+                        # Estimated Reach
+                        est_reach = sum_weights / thresh_k
+                        # Difference from target
+                        diff = abs(est_reach - target_pop)
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_k = k
+                    
+                    # 3. Generate Final Code using Best K
+                    final_items = core_sigs.head(best_k)
+                    final_thresh = (best_k // 2) + 1
+                    
+                    mindset_report.append({
+                        "id": i+1, 
+                        "color": px.colors.qualitative.Bold[i % 10], 
+                        "rows": final_items['Label'].tolist(), 
+                        "pop_000s": target_pop, 
+                        "percent": pop_pct, 
+                        "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), 
+                        "threshold": final_thresh,
+                        "is_broad": pop_pct > 40.0
+                    })
         else:
             df_a['Cluster'] = 0; df_b['Cluster'] = 0
             for l in df_p_list: l['Cluster'] = 0
@@ -437,7 +429,16 @@ with tab1:
             cols = st.columns(3)
             for idx, m in enumerate(mindset_report):
                 with cols[idx % 3]:
-                    st.markdown(f"""<div class="mindset-card" style="border-left-color: {m['color']};"><span class="size-badge">{m['percent']:.1f}% US</span><h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3><p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p><p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p></div>""", unsafe_allow_html=True)
+                    badge_class = "size-badge-warning" if m['is_broad'] else "size-badge"
+                    broad_warn = "⚠️ Broad Audience" if m['is_broad'] else ""
+                    st.markdown(f"""
+                    <div class="mindset-card" style="border-left-color: {m['color']};">
+                        <span class="{badge_class}">{m['percent']:.1f}% US</span>
+                        <h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3>
+                        <p style="color: #666; font-size: 0.9em; margin-bottom: 5px;">{broad_warn}</p>
+                        <p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p>
+                        <p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p>
+                    </div>""", unsafe_allow_html=True)
 
 with tab2:
     st.header("💬 AI Strategy Chat")
@@ -472,12 +473,12 @@ with tab3:
             df_c = data_r.iloc[:, c_idx]; df_c.columns = h
             df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
             
-            # --- NEW AUTO-CLEAN LOGIC FOR PASSIVE LAYERS ---
+            # --- AUTO-CLEAN LOGIC ALSO HERE ---
             if df_c['Attitude'].astype(str).str.contains('_Any Agree', na=False).any():
                 df_c = df_c[df_c['Attitude'].astype(str).str.contains('_Any Agree', na=False)]
                 df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
                 df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('"', '', regex=False)
-            # ------------------------------------------------
+            # ----------------------------------
             
             for c in df_c.columns[1:]: df_c[c] = pd.to_numeric(df_c[c].astype(str).str.replace(',', ''), errors='coerce')
             df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
@@ -492,3 +493,5 @@ with tab4:
             with st.expander(f"Mindset {t['id']} Formula (~{t['percent']:.1f}% Pop)", expanded=True):
                 m_code = "(" + " + ".join([f"[{r}]" for r in t['rows']]) + f") >= {t['threshold']}"
                 st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{m_code}</div>', unsafe_allow_html=True)
+                if t['is_broad']:
+                    st.warning(f"⚠️ This mindset covers {t['percent']:.1f}% of the population, which exceeds the recommended 40%. Consider tightening the definition in the Discovery settings.")
