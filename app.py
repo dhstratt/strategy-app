@@ -29,7 +29,6 @@ st.markdown("""
             background-color: #f9f9f9; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
-        .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
@@ -286,34 +285,44 @@ with tab1:
                         m = l['Cluster']==i
                         if any(m): l.loc[m, 'IsCore'] = np.sqrt((l.loc[m,'x']-centroids[i][0])**2 + (l.loc[m,'y']-centroids[i][1])**2) <= cutoff
                     
-                    # --- SMART COUNT CODE ALGORITHM ---
+                    # --- SMART COUNT CODE ALGORITHM (With 40% Cap) ---
                     core_sigs = cluster_sigs[cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
                     
                     # 1. Determine Target Population (Avg of Top 5)
-                    target_pop = core_sigs.head(5)['Weight'].mean()
+                    raw_pop = core_sigs.head(5)['Weight'].mean()
+                    
+                    # 2. Apply Hard Cap: Max 40% of Universe
+                    max_pop = st.session_state.universe_size * 0.40
+                    target_pop = min(raw_pop, max_pop)
+                    
                     pop_pct = (target_pop / st.session_state.universe_size) * 100
                     
-                    # 2. Iterate to find best Code Length (5 to 15 items) that allows Majority Rule to match size
+                    # 3. Iterate to find best (K, Threshold) to match Target Pop
+                    # We check K (items) from 5 to 15
+                    # We check Threshold (T) from Majority (K//2 + 1) to K
                     best_k = 10
+                    best_thresh = 6
                     best_diff = float('inf')
                     
                     for k in range(5, min(16, len(core_sigs) + 1)):
-                        # Proposed items
                         k_items = core_sigs.head(k)
                         sum_weights = k_items['Weight'].sum()
-                        # Strict Majority Rule (e.g., 3/5, 4/6, 4/7)
-                        thresh_k = (k // 2) + 1
-                        # Estimated Reach
-                        est_reach = sum_weights / thresh_k
-                        # Difference from target
-                        diff = abs(est_reach - target_pop)
-                        if diff < best_diff:
-                            best_diff = diff
-                            best_k = k
+                        
+                        # Iterate thresholds from Majority up to All
+                        min_t = (k // 2) + 1
+                        for t in range(min_t, k + 1):
+                            # Heuristic: Reach ≈ Sum_Weights / Threshold
+                            # (Higher threshold = Lower reach)
+                            est_reach = sum_weights / t
+                            
+                            diff = abs(est_reach - target_pop)
+                            if diff < best_diff:
+                                best_diff = diff
+                                best_k = k
+                                best_thresh = t
                     
-                    # 3. Generate Final Code using Best K
+                    # 4. Generate Final Code using Best Parameters
                     final_items = core_sigs.head(best_k)
-                    final_thresh = (best_k // 2) + 1
                     
                     mindset_report.append({
                         "id": i+1, 
@@ -322,8 +331,7 @@ with tab1:
                         "pop_000s": target_pop, 
                         "percent": pop_pct, 
                         "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), 
-                        "threshold": final_thresh,
-                        "is_broad": pop_pct > 40.0
+                        "threshold": best_thresh
                     })
         else:
             df_a['Cluster'] = 0; df_b['Cluster'] = 0
@@ -429,13 +437,10 @@ with tab1:
             cols = st.columns(3)
             for idx, m in enumerate(mindset_report):
                 with cols[idx % 3]:
-                    badge_class = "size-badge-warning" if m['is_broad'] else "size-badge"
-                    broad_warn = "⚠️ Broad Audience" if m['is_broad'] else ""
                     st.markdown(f"""
                     <div class="mindset-card" style="border-left-color: {m['color']};">
-                        <span class="{badge_class}">{m['percent']:.1f}% US</span>
+                        <span class="size-badge">{m['percent']:.1f}% US</span>
                         <h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3>
-                        <p style="color: #666; font-size: 0.9em; margin-bottom: 5px;">{broad_warn}</p>
                         <p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p>
                         <p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p>
                     </div>""", unsafe_allow_html=True)
@@ -493,5 +498,3 @@ with tab4:
             with st.expander(f"Mindset {t['id']} Formula (~{t['percent']:.1f}% Pop)", expanded=True):
                 m_code = "(" + " + ".join([f"[{r}]" for r in t['rows']]) + f") >= {t['threshold']}"
                 st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{m_code}</div>', unsafe_allow_html=True)
-                if t['is_broad']:
-                    st.warning(f"⚠️ This mindset covers {t['percent']:.1f}% of the population, which exceeds the recommended 40%. Consider tightening the definition in the Discovery settings.")
