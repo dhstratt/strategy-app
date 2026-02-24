@@ -32,6 +32,8 @@ st.markdown("""
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
+        .status-ok { color: #2e7d32; font-weight: 800; font-size: 1.1em; }
+        .status-err { color: #c62828; font-weight: 800; font-size: 1.1em; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -40,7 +42,6 @@ if 'processed_data' not in st.session_state: st.session_state.processed_data = F
 if 'passive_data' not in st.session_state: st.session_state.passive_data = [] 
 if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
 if 'universe_size' not in st.session_state: st.session_state.universe_size = 258000.0
-if 'messages' not in st.session_state: st.session_state.messages = [{"role": "assistant", "content": "Ask me about **Mindsets** or **Population Reach**."}]
 if 'df_brands' not in st.session_state: st.session_state.df_brands = pd.DataFrame()
 if 'df_attrs' not in st.session_state: st.session_state.df_attrs = pd.DataFrame()
 if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
@@ -174,7 +175,8 @@ def process_data(uploaded_file, passive_files, passive_configs):
 # ==========================================
 # UI
 # ==========================================
-tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Strategic Map", "💬 Strategy Chat", "🧹 MRI Cleaner", "📟 Count Codes"])
+# UPDATED TABS (Removed Strategy Chat)
+tab1, tab2, tab3 = st.tabs(["🗺️ Strategic Map", "🧹 MRI Cleaner", "📟 Count Code Editor"])
 
 with tab1:
     st.title("🗺️ The Consumer Landscape")
@@ -298,30 +300,21 @@ with tab1:
                     pop_pct = (target_pop / st.session_state.universe_size) * 100
                     
                     # 3. Iterate to find best (K, Threshold) to match Target Pop
-                    # We check K (items) from 5 to 15
-                    # We check Threshold (T) from Majority (K//2 + 1) to K
-                    best_k = 10
-                    best_thresh = 6
-                    best_diff = float('inf')
+                    best_k, best_thresh, best_diff = 10, 6, float('inf')
                     
                     for k in range(5, min(16, len(core_sigs) + 1)):
                         k_items = core_sigs.head(k)
                         sum_weights = k_items['Weight'].sum()
                         
-                        # Iterate thresholds from Majority up to All
                         min_t = (k // 2) + 1
                         for t in range(min_t, k + 1):
-                            # Heuristic: Reach ≈ Sum_Weights / Threshold
-                            # (Higher threshold = Lower reach)
                             est_reach = sum_weights / t
-                            
                             diff = abs(est_reach - target_pop)
                             if diff < best_diff:
                                 best_diff = diff
                                 best_k = k
                                 best_thresh = t
                     
-                    # 4. Generate Final Code using Best Parameters
                     final_items = core_sigs.head(best_k)
                     
                     mindset_report.append({
@@ -446,23 +439,6 @@ with tab1:
                     </div>""", unsafe_allow_html=True)
 
 with tab2:
-    st.header("💬 AI Strategy Chat")
-    if not st.session_state.processed_data: st.warning("Upload data.")
-    else:
-        def analyze_query(query):
-            q, df_b_chat, df_a_chat = query.lower(), st.session_state.df_brands, st.session_state.df_attrs
-            if "theme" in q: return f"↔️ **X:** {df_a_chat.loc[df_a_chat['x'].idxmin()]['Label']} vs {df_a_chat.loc[df_a_chat['x'].idxmax()]['Label']}"
-            for b in df_b_chat['Label']:
-                if b.lower() in q:
-                    br = df_b_chat[df_b_chat['Label']==b].iloc[0]; df_a_chat['D'] = np.sqrt((df_a_chat['x']-br['x'])**2 + (df_a_chat['y']-br['y'])**2)
-                    return f"✅ **{b} Strengths:** {', '.join(df_a_chat.sort_values('D').head(3)['Label'].tolist())}"
-            return "Ask about themes or brands."
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]): st.markdown(msg["content"])
-        if prompt := st.chat_input("Ask..."):
-            st.session_state.messages.append({"role": "user", "content": prompt}); st.rerun()
-
-with tab3:
     st.header("🧹 MRI Data Cleaner")
     raw_mri = st.file_uploader("Upload Raw Export", type=["csv", "xlsx", "xls"])
     if raw_mri:
@@ -478,23 +454,79 @@ with tab3:
             df_c = data_r.iloc[:, c_idx]; df_c.columns = h
             df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
             
-            # --- AUTO-CLEAN LOGIC ALSO HERE ---
             if df_c['Attitude'].astype(str).str.contains('_Any Agree', na=False).any():
                 df_c = df_c[df_c['Attitude'].astype(str).str.contains('_Any Agree', na=False)]
                 df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
                 df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('"', '', regex=False)
-            # ----------------------------------
             
             for c in df_c.columns[1:]: df_c[c] = pd.to_numeric(df_c[c].astype(str).str.replace(',', ''), errors='coerce')
             df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
             st.success("Cleaned!"); st.download_button("Download CSV", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv")
         except: st.error("Format error.")
 
-with tab4:
-    st.header("📟 Count Code Maker")
-    if not st.session_state.mindset_report: st.warning("Run Discovery.")
+with tab3:
+    st.header("📟 Count Code Editor")
+    st.markdown("Review the AI's suggested formulas below. You can **manually add or remove traits** and **adjust the threshold** to fine-tune the final audience.")
+    
+    if not st.session_state.mindset_report: 
+        st.warning("Run Discovery on the Strategy Map tab first.")
     else:
+        # Build master dictionary for live math
+        weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
+        for layer in st.session_state.passive_data:
+            if isinstance(layer, pd.DataFrame) and not layer.empty and 'Label' in layer.columns and 'Weight' in layer.columns:
+                weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
+        
+        all_available_labels = sorted(list(weight_lookup.keys()))
+
         for t in st.session_state.mindset_report:
-            with st.expander(f"Mindset {t['id']} Formula (~{t['percent']:.1f}% Pop)", expanded=True):
-                m_code = "(" + " + ".join([f"[{r}]" for r in t['rows']]) + f") >= {t['threshold']}"
+            with st.expander(f"Mindset {t['id']} Formula Builder", expanded=True):
+                # Use hash to reset state if the AI recommendations change (e.g. from slider updates on Tab 1)
+                ai_hash = hash(tuple(t['rows']))
+                ms_key = f"ms_items_{t['id']}_{ai_hash}"
+                th_key = f"ms_thresh_{t['id']}_{ai_hash}"
+                
+                if ms_key not in st.session_state: st.session_state[ms_key] = t['rows']
+                if th_key not in st.session_state: st.session_state[th_key] = t['threshold']
+
+                st.markdown(f"### <span style='color:{t['color']}'>Mindset {t['id']}</span>", unsafe_allow_html=True)
+                
+                # Interactive Editor
+                selected_items = st.multiselect(
+                    "Defining Attributes (Add or Remove):", 
+                    options=all_available_labels,
+                    default=st.session_state[ms_key],
+                    key=ms_key
+                )
+                
+                if not selected_items:
+                    st.error("Please select at least one attribute.")
+                    continue
+                    
+                max_thresh = len(selected_items)
+                if st.session_state[th_key] > max_thresh: st.session_state[th_key] = max_thresh
+                    
+                selected_thresh = st.slider(
+                    "Threshold (Must agree with at least X statements):",
+                    min_value=1,
+                    max_value=max_thresh,
+                    value=st.session_state[th_key],
+                    key=th_key
+                )
+                
+                # Live Math
+                sum_weights = sum([weight_lookup.get(item, 0) for item in selected_items])
+                est_reach_000s = sum_weights / selected_thresh
+                est_reach_pct = (est_reach_000s / st.session_state.universe_size) * 100
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if est_reach_pct <= 40:
+                        st.markdown(f"**Estimated Reach:** <span class='status-ok'>~{est_reach_pct:.1f}% ({est_reach_000s:,.0f} 000s)</span>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"**Estimated Reach:** <span class='status-err'>~{est_reach_pct:.1f}% ({est_reach_000s:,.0f} 000s)</span> ⚠️ Broad", unsafe_allow_html=True)
+                with col2:
+                    st.markdown(f"*(AI Baseline Suggestion: ~{t['percent']:.1f}%)*")
+
+                m_code = "(" + " + ".join([f"[{r}]" for r in selected_items]) + f") >= {selected_thresh}"
                 st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{m_code}</div>', unsafe_allow_html=True)
