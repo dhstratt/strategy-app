@@ -89,12 +89,8 @@ def rotate_coords(df_to_rot, angle_deg):
 def calculate_clustered_reach(sum_weights, threshold, num_items):
     """
     Revised formula to account for High Correlation in Mindsets (Overlap).
-    Old: Sum / Threshold (Assumes Independence/Low Overlap) -> Overestimates reach for clusters.
-    New: Sum / (Threshold + (N - Threshold) * Correlation_Factor)
-    Correlation_Factor = 0.7 (Assumes high overlap, typical for clustered mindsets)
     """
     if threshold == 0: return 0
-    # Correlation Factor: 0 = Disjoint, 1 = Perfect Overlap. Mindsets are ~0.7-0.8
     overlap_factor = 0.7 
     divisor = threshold + (num_items - threshold) * overlap_factor
     return sum_weights / divisor
