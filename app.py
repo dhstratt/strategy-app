@@ -175,7 +175,7 @@ def process_data(uploaded_file, passive_files, passive_configs):
 # ==========================================
 # UI
 # ==========================================
-# UPDATED TABS (Removed Strategy Chat)
+# UPDATED TABS (Streamlined)
 tab1, tab2, tab3 = st.tabs(["🗺️ Strategic Map", "🧹 MRI Cleaner", "📟 Count Code Editor"])
 
 with tab1:
@@ -209,15 +209,26 @@ with tab1:
         if passive_files:
             st.subheader("⚙️ Layer Manager")
             for i, pf in enumerate(passive_files):
-                stat_txt = ""
+                # STREAMLINED SIDEBAR: Use the custom name in the header if available
+                header_name = st.session_state.get(f"n_{pf.name}", pf.name)
+                
+                # Tiny status icon for the header
+                icon = "⚪"
                 if st.session_state.processed_data and i < len(st.session_state.passive_data):
-                    pd_info = st.session_state.passive_data[i]
-                    stat_txt = pd_info.get('Status', '')
-                with st.expander(f"{pf.name} {stat_txt}", expanded=False):
+                    status = st.session_state.passive_data[i].get('Status', '')
+                    if "✅" in status: icon = "🟢"
+                    elif "⚠️" in status: icon = "🟡"
+                    elif "❌" in status: icon = "🔴"
+
+                with st.expander(f"{icon} {header_name}", expanded=False):
                     p_name = st.text_input("Layer Name", pf.name, key=f"n_{pf.name}")
                     p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
                     p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{pf.name}")
-                    if "⚠️" in stat_txt: st.error("Check column names for matches.")
+                    
+                    # Show detailed status INSIDE the expander to reduce clutter
+                    if st.session_state.processed_data and i < len(st.session_state.passive_data):
+                        st.caption(f"Status: {st.session_state.passive_data[i].get('Status', 'Pending')}")
+                    
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
 
         if uploaded_file: process_data(uploaded_file, passive_files, passive_configs)
@@ -244,7 +255,9 @@ with tab1:
 
         lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
-        lbl_passive = st.checkbox("Passive Labels", True)
+        # STREAMLINED MAP: Default Passive Labels to FALSE
+        lbl_passive = st.checkbox("Passive Labels", False)
+        
         placeholder_filters = st.container()
 
         st.divider()
