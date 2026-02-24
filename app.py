@@ -29,6 +29,7 @@ st.markdown("""
             background-color: #f9f9f9; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
+        .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
@@ -175,7 +176,6 @@ def process_data(uploaded_file, passive_files, passive_configs):
 # ==========================================
 # UI
 # ==========================================
-# UPDATED TABS (Streamlined)
 tab1, tab2, tab3 = st.tabs(["🗺️ Strategic Map", "🧹 MRI Cleaner", "📟 Count Code Editor"])
 
 with tab1:
@@ -209,10 +209,8 @@ with tab1:
         if passive_files:
             st.subheader("⚙️ Layer Manager")
             for i, pf in enumerate(passive_files):
-                # STREAMLINED SIDEBAR: Use the custom name in the header if available
+                # Custom Header Logic
                 header_name = st.session_state.get(f"n_{pf.name}", pf.name)
-                
-                # Tiny status icon for the header
                 icon = "⚪"
                 if st.session_state.processed_data and i < len(st.session_state.passive_data):
                     status = st.session_state.passive_data[i].get('Status', '')
@@ -225,7 +223,6 @@ with tab1:
                     p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
                     p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{pf.name}")
                     
-                    # Show detailed status INSIDE the expander to reduce clutter
                     if st.session_state.processed_data and i < len(st.session_state.passive_data):
                         st.caption(f"Status: {st.session_state.passive_data[i].get('Status', 'Pending')}")
                     
@@ -255,7 +252,6 @@ with tab1:
 
         lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
-        # STREAMLINED MAP: Default Passive Labels to FALSE
         lbl_passive = st.checkbox("Passive Labels", False)
         
         placeholder_filters = st.container()
@@ -302,31 +298,20 @@ with tab1:
                     
                     # --- SMART COUNT CODE ALGORITHM (With 40% Cap) ---
                     core_sigs = cluster_sigs[cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
-                    
-                    # 1. Determine Target Population (Avg of Top 5)
                     raw_pop = core_sigs.head(5)['Weight'].mean()
-                    
-                    # 2. Apply Hard Cap: Max 40% of Universe
-                    max_pop = st.session_state.universe_size * 0.40
-                    target_pop = min(raw_pop, max_pop)
-                    
+                    target_pop = min(raw_pop, st.session_state.universe_size * 0.40)
                     pop_pct = (target_pop / st.session_state.universe_size) * 100
                     
-                    # 3. Iterate to find best (K, Threshold) to match Target Pop
                     best_k, best_thresh, best_diff = 10, 6, float('inf')
-                    
                     for k in range(5, min(16, len(core_sigs) + 1)):
                         k_items = core_sigs.head(k)
                         sum_weights = k_items['Weight'].sum()
-                        
                         min_t = (k // 2) + 1
                         for t in range(min_t, k + 1):
                             est_reach = sum_weights / t
                             diff = abs(est_reach - target_pop)
                             if diff < best_diff:
-                                best_diff = diff
-                                best_k = k
-                                best_thresh = t
+                                best_diff = diff; best_k = k; best_thresh = t
                     
                     final_items = core_sigs.head(best_k)
                     
@@ -337,12 +322,25 @@ with tab1:
                         "pop_000s": target_pop, 
                         "percent": pop_pct, 
                         "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), 
-                        "threshold": best_thresh
+                        "threshold": best_thresh,
+                        "is_broad": pop_pct > 40.0
                     })
         else:
             df_a['Cluster'] = 0; df_b['Cluster'] = 0
             for l in df_p_list: l['Cluster'] = 0
         
+        # NOTE: If we are not editing, we load the report. 
+        # If we ARE editing (session state exists), we use that to override the report display.
+        # However, to keep it simple, we initialize the report here, and let the Editor tab Modify it.
+        # But for persistent changes to show on Tab 1, we need to check if we have manual overrides.
+        
+        # Apply Overrides if they exist
+        for m in mindset_report:
+            ai_hash = hash(tuple(m['rows'])) # Use initial hash as ID
+            # Check for manual overrides from Tab 3 using a simpler ID key structure if needed
+            # For now, we update the session_state.mindset_report at end of script cycle
+            pass
+
         st.session_state.mindset_report = mindset_report
         
         if enable_clustering:
@@ -438,15 +436,45 @@ with tab1:
         fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
         st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
 
-        if mindset_report and enable_clustering:
+        # --- UPDATED: Use the report that might have been modified by Tab 3 ---
+        # We need to access the LATEST state from the Count Code Editor if it exists
+        final_report = []
+        for i, m in enumerate(st.session_state.mindset_report):
+            ai_hash = hash(tuple(m['rows']))
+            ms_key = f"ms_items_{m['id']}_{ai_hash}"
+            th_key = f"ms_thresh_{m['id']}_{ai_hash}"
+            
+            # If the user has edited this mindset in Tab 3, we use their values
+            if ms_key in st.session_state:
+                m['rows'] = st.session_state[ms_key]
+            if th_key in st.session_state:
+                m['threshold'] = st.session_state[th_key]
+                
+                # Re-calc size for the Card
+                weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
+                for layer in st.session_state.passive_data:
+                    if isinstance(layer, pd.DataFrame) and not layer.empty:
+                        weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
+                
+                sum_w = sum([weight_lookup.get(item, 0) for item in m['rows']])
+                m['pop_000s'] = sum_w / m['threshold']
+                m['percent'] = (m['pop_000s'] / st.session_state.universe_size) * 100
+                m['is_broad'] = m['percent'] > 40.0
+            
+            final_report.append(m)
+
+        if final_report and enable_clustering:
             st.divider(); st.header("👥 Population Analysis")
             cols = st.columns(3)
-            for idx, m in enumerate(mindset_report):
+            for idx, m in enumerate(final_report):
                 with cols[idx % 3]:
+                    badge_class = "size-badge-warning" if m.get('is_broad', False) else "size-badge"
+                    broad_warn = "⚠️ Broad Audience" if m.get('is_broad', False) else ""
                     st.markdown(f"""
                     <div class="mindset-card" style="border-left-color: {m['color']};">
-                        <span class="size-badge">{m['percent']:.1f}% US</span>
+                        <span class="{badge_class}">{m['percent']:.1f}% US</span>
                         <h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3>
+                        <p style="color: #666; font-size: 0.9em; margin-bottom: 5px;">{broad_warn}</p>
                         <p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p>
                         <p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p>
                     </div>""", unsafe_allow_html=True)
@@ -494,17 +522,17 @@ with tab3:
 
         for t in st.session_state.mindset_report:
             with st.expander(f"Mindset {t['id']} Formula Builder", expanded=True):
-                # Use hash to reset state if the AI recommendations change (e.g. from slider updates on Tab 1)
                 ai_hash = hash(tuple(t['rows']))
                 ms_key = f"ms_items_{t['id']}_{ai_hash}"
                 th_key = f"ms_thresh_{t['id']}_{ai_hash}"
                 
+                # Initialize state if needed
                 if ms_key not in st.session_state: st.session_state[ms_key] = t['rows']
                 if th_key not in st.session_state: st.session_state[th_key] = t['threshold']
 
                 st.markdown(f"### <span style='color:{t['color']}'>Mindset {t['id']}</span>", unsafe_allow_html=True)
                 
-                # Interactive Editor
+                # 1. Selection
                 selected_items = st.multiselect(
                     "Defining Attributes (Add or Remove):", 
                     options=all_available_labels,
@@ -516,7 +544,9 @@ with tab3:
                     st.error("Please select at least one attribute.")
                     continue
                     
+                # 2. Threshold
                 max_thresh = len(selected_items)
+                # Ensure threshold is valid for new list size
                 if st.session_state[th_key] > max_thresh: st.session_state[th_key] = max_thresh
                     
                 selected_thresh = st.slider(
@@ -527,19 +557,32 @@ with tab3:
                     key=th_key
                 )
                 
-                # Live Math
+                # 3. Live Math
                 sum_weights = sum([weight_lookup.get(item, 0) for item in selected_items])
                 est_reach_000s = sum_weights / selected_thresh
                 est_reach_pct = (est_reach_000s / st.session_state.universe_size) * 100
                 
+                # 4. Visualization & Warning
                 col1, col2 = st.columns(2)
                 with col1:
-                    if est_reach_pct <= 40:
-                        st.markdown(f"**Estimated Reach:** <span class='status-ok'>~{est_reach_pct:.1f}% ({est_reach_000s:,.0f} 000s)</span>", unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"**Estimated Reach:** <span class='status-err'>~{est_reach_pct:.1f}% ({est_reach_000s:,.0f} 000s)</span> ⚠️ Broad", unsafe_allow_html=True)
+                    # Population Bar Chart
+                    bar_color = '#2e7d32' if est_reach_pct <= 40 else '#c62828'
+                    st.markdown(f"""
+                        <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
+                            <div style="background-color: {bar_color}; width: {min(100, est_reach_pct)}%; height: 100%; border-radius: 5px;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+                            <span style="font-weight: bold; color: {bar_color}">{est_reach_pct:.1f}% Reach</span>
+                            <span style="color: #666">40% Cap</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    if est_reach_pct > 40:
+                        st.caption("⚠️ Audience too broad. Increase threshold.")
+
                 with col2:
-                    st.markdown(f"*(AI Baseline Suggestion: ~{t['percent']:.1f}%)*")
+                    st.markdown(f"**Population:** {est_reach_000s:,.0f} (000s)")
+                    st.markdown(f"*(AI Baseline: ~{t['percent']:.1f}%)*")
 
                 m_code = "(" + " + ".join([f"[{r}]" for r in selected_items]) + f") >= {selected_thresh}"
                 st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{m_code}</div>', unsafe_allow_html=True)
