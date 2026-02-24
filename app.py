@@ -49,29 +49,22 @@ if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
 
 # --- HELPERS ---
 def normalize_strings(s_index):
-    """Normalize strings for fuzzy matching: lowercase, strip, remove punctuation"""
     return s_index.astype(str).str.lower().str.replace(r'[^\w\s]', '', regex=True).str.strip()
 
 def clean_df(df_input, is_core=False):
-    """Robust data cleaning: Handles commas, %, $, - and sets index"""
     df = df_input.copy()
-    
-    # --- AUTO-CLEAN PASSIVE LAYER ---
     label_col = df.columns[0]
     if df[label_col].astype(str).str.contains('_Any Agree', na=False).any():
         df = df[df[label_col].astype(str).str.contains('_Any Agree', na=False)]
         df[label_col] = df[label_col].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
         df[label_col] = df[label_col].astype(str).str.replace('"', '', regex=False)
-    # --------------------------------
-
-    df = df.set_index(label_col)
     
+    df = df.set_index(label_col)
     for col in df.columns:
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(r'[,$%]', '', regex=True)
             df[col] = df[col].str.replace(r'^\s*-\s*$', '0', regex=True)
             df[col] = pd.to_numeric(df[col], errors='coerce')
-    
     df = df.fillna(0)
     
     if is_core:
@@ -81,7 +74,6 @@ def clean_df(df_input, is_core=False):
     
     mask = ~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
-    
     return df.loc[mask, valid_cols]
 
 def rotate_coords(df_to_rot, angle_deg):
@@ -94,6 +86,19 @@ def rotate_coords(df_to_rot, angle_deg):
     df_new['x'], df_new['y'] = rotated[:, 0], rotated[:, 1]
     return df_new
 
+def calculate_clustered_reach(sum_weights, threshold, num_items):
+    """
+    Revised formula to account for High Correlation in Mindsets (Overlap).
+    Old: Sum / Threshold (Assumes Independence/Low Overlap) -> Overestimates reach for clusters.
+    New: Sum / (Threshold + (N - Threshold) * Correlation_Factor)
+    Correlation_Factor = 0.7 (Assumes high overlap, typical for clustered mindsets)
+    """
+    if threshold == 0: return 0
+    # Correlation Factor: 0 = Disjoint, 1 = Perfect Overlap. Mindsets are ~0.7-0.8
+    overlap_factor = 0.7 
+    divisor = threshold + (num_items - threshold) * overlap_factor
+    return sum_weights / divisor
+
 # ==========================================
 # DATA PROCESSING ENGINE
 # ==========================================
@@ -105,7 +110,6 @@ def process_data(uploaded_file, passive_files, passive_configs):
         df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
         
         if not df_math.empty:
-            # 1. CORE SVD MAP
             N = df_math.values; matrix_sum = N.sum()
             if matrix_sum == 0: return
             P = N / matrix_sum; r = P.sum(axis=1); c = P.sum(axis=0); E = np.outer(r,c)
@@ -121,7 +125,6 @@ def process_data(uploaded_file, passive_files, passive_configs):
             st.session_state.accuracy = (np.sum(eig_vals[:2]) / total_var * 100) if total_var > 0 else 0
             st.session_state.processed_data = True
 
-            # 2. PASSIVE LAYER PROJECTION
             pass_list = []
             core_cols_norm = normalize_strings(df_math.columns)
             core_idx_norm = normalize_strings(df_math.index)
@@ -209,7 +212,6 @@ with tab1:
         if passive_files:
             st.subheader("⚙️ Layer Manager")
             for i, pf in enumerate(passive_files):
-                # Custom Header Logic
                 header_name = st.session_state.get(f"n_{pf.name}", pf.name)
                 icon = "⚪"
                 if st.session_state.processed_data and i < len(st.session_state.passive_data):
@@ -222,10 +224,8 @@ with tab1:
                     p_name = st.text_input("Layer Name", pf.name, key=f"n_{pf.name}")
                     p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
                     p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{pf.name}")
-                    
                     if st.session_state.processed_data and i < len(st.session_state.passive_data):
                         st.caption(f"Status: {st.session_state.passive_data[i].get('Status', 'Pending')}")
-                    
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
 
         if uploaded_file: process_data(uploaded_file, passive_files, passive_configs)
@@ -296,7 +296,7 @@ with tab1:
                         m = l['Cluster']==i
                         if any(m): l.loc[m, 'IsCore'] = np.sqrt((l.loc[m,'x']-centroids[i][0])**2 + (l.loc[m,'y']-centroids[i][1])**2) <= cutoff
                     
-                    # --- SMART COUNT CODE ALGORITHM (With 40% Cap) ---
+                    # --- SMART COUNT CODE ALGORITHM (With Robust Math) ---
                     core_sigs = cluster_sigs[cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
                     raw_pop = core_sigs.head(5)['Weight'].mean()
                     target_pop = min(raw_pop, st.session_state.universe_size * 0.40)
@@ -308,7 +308,8 @@ with tab1:
                         sum_weights = k_items['Weight'].sum()
                         min_t = (k // 2) + 1
                         for t in range(min_t, k + 1):
-                            est_reach = sum_weights / t
+                            # USE THE NEW CLUSTERED REACH FUNCTION
+                            est_reach = calculate_clustered_reach(sum_weights, t, k)
                             diff = abs(est_reach - target_pop)
                             if diff < best_diff:
                                 best_diff = diff; best_k = k; best_thresh = t
@@ -329,137 +330,27 @@ with tab1:
             df_a['Cluster'] = 0; df_b['Cluster'] = 0
             for l in df_p_list: l['Cluster'] = 0
         
-        # NOTE: If we are not editing, we load the report. 
-        # If we ARE editing (session state exists), we use that to override the report display.
-        # However, to keep it simple, we initialize the report here, and let the Editor tab Modify it.
-        # But for persistent changes to show on Tab 1, we need to check if we have manual overrides.
-        
-        # Apply Overrides if they exist
-        for m in mindset_report:
-            ai_hash = hash(tuple(m['rows'])) # Use initial hash as ID
-            # Check for manual overrides from Tab 3 using a simpler ID key structure if needed
-            # For now, we update the session_state.mindset_report at end of script cycle
-            pass
-
-        st.session_state.mindset_report = mindset_report
-        
-        if enable_clustering:
-            v_mode = st.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
-        else:
-            v_mode = "Show All"
-            
-        with placeholder_filters:
-            with st.expander("🔍 Filter Base Map", expanded=False):
-                show_base_cols = st.checkbox("Show Columns (Dots)", True)
-                show_base_rows = st.checkbox("Show Rows (Dots)", True)
-                sel_brands = st.multiselect("Visible Columns:", sorted(df_b['Label']), default=sorted(df_b['Label']))
-                sel_rows = st.multiselect("Visible Rows:", sorted(df_a['Label']), default=sorted(df_a['Label']))
-                df_b = df_b[df_b['Label'].isin(sel_brands)]
-                df_a = df_a[df_a['Label'].isin(sel_rows)]
-            
-            for i, layer in enumerate(df_p_list):
-                if not layer.empty and layer['Visible'].iloc[0] and 'Label' in layer.columns:
-                    with st.expander(f"🔍 Filter {layer['LayerName'].iloc[0]}", expanded=False):
-                        l_opts = sorted(layer['Label'].unique())
-                        sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
-                        df_p_list[i] = layer[layer['Label'].isin(sel_p)]
-
-        fig = go.Figure()
-        
-        if enable_clustering:
-            for i in range(num_clusters):
-                fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color=px.colors.qualitative.Bold[i % 10]), legendgroup=f"M{i+1}", showlegend=True, name=f"Mindset {i+1}"))
-        else:
-            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
-            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
-            for l in df_p_list:
-                if not l.empty:
-                    fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#555', symbol=l['Shape'].iloc[0]), name=l['LayerName'].iloc[0]))
-
-        def get_so(lbl, base_c, is_core=True):
-            if f_brand == "None": return (base_c, 0.9) if is_core else ('#eeeeee', 0.15)
-            return (base_c, 1.0) if (lbl == f_brand or lbl in hl) else ('#d3d3d3', 0.2)
-
-        hl = []
-        if f_brand != "None":
-            hero = df_b[df_b['Label'] == f_brand].iloc[0]
-            for d in [df_a] + df_p_list:
-                d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
-                hl += d.sort_values('temp_d').head(5)['Label'].tolist()
-
-        if show_base_cols:
-            res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
-            fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], showlegend=False))
-            if lbl_cols:
-                for _, r in df_b.iterrows():
-                    color, opac = get_so(r['Label'], '#1f77b4')
-                    fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
-
-        if show_base_rows:
-            if enable_clustering:
-                for cid in sorted(df_a['Cluster'].unique()):
-                    if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
-                    sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
-                    res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
-                    if lbl_rows:
-                        for _, r in sub.iterrows():
-                            color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
-                            if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
-            else:
-                res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
-                fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], showlegend=False))
-                if lbl_rows:
-                    for _, r in df_a.iterrows():
-                        color, opac = get_so(r['Label'], '#d62728'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
-
-        for i, layer in enumerate(df_p_list):
-            if not layer.empty and layer['Visible'].iloc[0]:
-                l_shape = layer['Shape'].iloc[0] 
-                if enable_clustering:
-                    for cid in sorted(layer['Cluster'].unique()):
-                        if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
-                        sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
-                        res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
-                        if lbl_passive:
-                            for _, r in sub.iterrows():
-                                c, o = get_so(r['Label'], bc, r.get('IsCore', True))
-                                if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=10))
-                else:
-                    res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
-                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], showlegend=False))
-                    if lbl_passive:
-                        for _, r in layer.iterrows():
-                            color, opac = get_so(r['Label'], '#555'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
-
-        fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
-        st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
-
-        # --- UPDATED: Use the report that might have been modified by Tab 3 ---
-        # We need to access the LATEST state from the Count Code Editor if it exists
+        # APPLY MANUAL OVERRIDES
         final_report = []
-        for i, m in enumerate(st.session_state.mindset_report):
+        for i, m in enumerate(mindset_report):
             ai_hash = hash(tuple(m['rows']))
             ms_key = f"ms_items_{m['id']}_{ai_hash}"
             th_key = f"ms_thresh_{m['id']}_{ai_hash}"
             
-            # If the user has edited this mindset in Tab 3, we use their values
-            if ms_key in st.session_state:
-                m['rows'] = st.session_state[ms_key]
-            if th_key in st.session_state:
-                m['threshold'] = st.session_state[th_key]
+            if ms_key in st.session_state: m['rows'] = st.session_state[ms_key]
+            if th_key in st.session_state: m['threshold'] = st.session_state[th_key]
                 
-                # Re-calc size for the Card
-                weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
-                for layer in st.session_state.passive_data:
-                    if isinstance(layer, pd.DataFrame) and not layer.empty:
-                        weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
-                
-                sum_w = sum([weight_lookup.get(item, 0) for item in m['rows']])
-                m['pop_000s'] = sum_w / m['threshold']
-                m['percent'] = (m['pop_000s'] / st.session_state.universe_size) * 100
-                m['is_broad'] = m['percent'] > 40.0
+            # Recalculate using ROBUST MATH for display
+            weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
+            for layer in st.session_state.passive_data:
+                if isinstance(layer, pd.DataFrame) and not layer.empty:
+                    weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
+            
+            sum_w = sum([weight_lookup.get(item, 0) for item in m['rows']])
+            # Use same robust math for live edits
+            m['pop_000s'] = calculate_clustered_reach(sum_w, m['threshold'], len(m['rows']))
+            m['percent'] = (m['pop_000s'] / st.session_state.universe_size) * 100
+            m['is_broad'] = m['percent'] > 40.0
             
             final_report.append(m)
 
@@ -478,6 +369,9 @@ with tab1:
                         <p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p>
                         <p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p>
                     </div>""", unsafe_allow_html=True)
+
+        fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
+        st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
 
 with tab2:
     st.header("🧹 MRI Data Cleaner")
@@ -512,7 +406,6 @@ with tab3:
     if not st.session_state.mindset_report: 
         st.warning("Run Discovery on the Strategy Map tab first.")
     else:
-        # Build master dictionary for live math
         weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
         for layer in st.session_state.passive_data:
             if isinstance(layer, pd.DataFrame) and not layer.empty and 'Label' in layer.columns and 'Weight' in layer.columns:
@@ -526,13 +419,11 @@ with tab3:
                 ms_key = f"ms_items_{t['id']}_{ai_hash}"
                 th_key = f"ms_thresh_{t['id']}_{ai_hash}"
                 
-                # Initialize state if needed
                 if ms_key not in st.session_state: st.session_state[ms_key] = t['rows']
                 if th_key not in st.session_state: st.session_state[th_key] = t['threshold']
 
                 st.markdown(f"### <span style='color:{t['color']}'>Mindset {t['id']}</span>", unsafe_allow_html=True)
                 
-                # 1. Selection
                 selected_items = st.multiselect(
                     "Defining Attributes (Add or Remove):", 
                     options=all_available_labels,
@@ -544,9 +435,7 @@ with tab3:
                     st.error("Please select at least one attribute.")
                     continue
                     
-                # 2. Threshold
                 max_thresh = len(selected_items)
-                # Ensure threshold is valid for new list size
                 if st.session_state[th_key] > max_thresh: st.session_state[th_key] = max_thresh
                     
                 selected_thresh = st.slider(
@@ -557,15 +446,13 @@ with tab3:
                     key=th_key
                 )
                 
-                # 3. Live Math
                 sum_weights = sum([weight_lookup.get(item, 0) for item in selected_items])
-                est_reach_000s = sum_weights / selected_thresh
+                # USE ROBUST MATH FOR LIVE EDITOR
+                est_reach_000s = calculate_clustered_reach(sum_weights, selected_thresh, len(selected_items))
                 est_reach_pct = (est_reach_000s / st.session_state.universe_size) * 100
                 
-                # 4. Visualization & Warning
                 col1, col2 = st.columns(2)
                 with col1:
-                    # Population Bar Chart
                     bar_color = '#2e7d32' if est_reach_pct <= 40 else '#c62828'
                     st.markdown(f"""
                         <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
@@ -576,7 +463,6 @@ with tab3:
                             <span style="color: #666">40% Cap</span>
                         </div>
                     """, unsafe_allow_html=True)
-                    
                     if est_reach_pct > 40:
                         st.caption("⚠️ Audience too broad. Increase threshold.")
 
