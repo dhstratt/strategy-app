@@ -87,9 +87,7 @@ def rotate_coords(df_to_rot, angle_deg):
     return df_new
 
 def calculate_clustered_reach(sum_weights, threshold, num_items):
-    """
-    Revised formula to account for High Correlation in Mindsets (Overlap).
-    """
+    """Revised formula for Clustered Reach (Overlap Aware)"""
     if threshold == 0: return 0
     overlap_factor = 0.7 
     divisor = threshold + (num_items - threshold) * overlap_factor
@@ -261,6 +259,9 @@ with tab1:
 
     # --- RENDER ---
     if st.session_state.processed_data:
+        # **FIXED**: Initialize 'fig' here so it exists for all subsequent blocks
+        fig = go.Figure()
+        
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_a = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
@@ -336,19 +337,110 @@ with tab1:
             if ms_key in st.session_state: m['rows'] = st.session_state[ms_key]
             if th_key in st.session_state: m['threshold'] = st.session_state[th_key]
                 
-            # Recalculate using ROBUST MATH for display
             weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
             for layer in st.session_state.passive_data:
                 if isinstance(layer, pd.DataFrame) and not layer.empty:
                     weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
             
             sum_w = sum([weight_lookup.get(item, 0) for item in m['rows']])
-            # Use same robust math for live edits
             m['pop_000s'] = calculate_clustered_reach(sum_w, m['threshold'], len(m['rows']))
             m['percent'] = (m['pop_000s'] / st.session_state.universe_size) * 100
             m['is_broad'] = m['percent'] > 40.0
             
             final_report.append(m)
+
+        st.session_state.mindset_report = final_report
+
+        if enable_clustering:
+            v_mode = st.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
+        else:
+            v_mode = "Show All"
+            
+        with placeholder_filters:
+            with st.expander("🔍 Filter Base Map", expanded=False):
+                show_base_cols = st.checkbox("Show Columns (Dots)", True)
+                show_base_rows = st.checkbox("Show Rows (Dots)", True)
+                sel_brands = st.multiselect("Visible Columns:", sorted(df_b['Label']), default=sorted(df_b['Label']))
+                sel_rows = st.multiselect("Visible Rows:", sorted(df_a['Label']), default=sorted(df_a['Label']))
+                df_b = df_b[df_b['Label'].isin(sel_brands)]
+                df_a = df_a[df_a['Label'].isin(sel_rows)]
+            
+            for i, layer in enumerate(df_p_list):
+                if not layer.empty and layer['Visible'].iloc[0] and 'Label' in layer.columns:
+                    with st.expander(f"🔍 Filter {layer['LayerName'].iloc[0]}", expanded=False):
+                        l_opts = sorted(layer['Label'].unique())
+                        sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
+                        df_p_list[i] = layer[layer['Label'].isin(sel_p)]
+
+        if enable_clustering:
+            for i in range(num_clusters):
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color=px.colors.qualitative.Bold[i % 10]), legendgroup=f"M{i+1}", showlegend=True, name=f"Mindset {i+1}"))
+        else:
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
+            for l in df_p_list:
+                if not l.empty:
+                    fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#555', symbol=l['Shape'].iloc[0]), name=l['LayerName'].iloc[0]))
+
+        def get_so(lbl, base_c, is_core=True):
+            if f_brand == "None": return (base_c, 0.9) if is_core else ('#eeeeee', 0.15)
+            return (base_c, 1.0) if (lbl == f_brand or lbl in hl) else ('#d3d3d3', 0.2)
+
+        hl = []
+        if f_brand != "None":
+            hero = df_b[df_b['Label'] == f_brand].iloc[0]
+            for d in [df_a] + df_p_list:
+                d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
+                hl += d.sort_values('temp_d').head(5)['Label'].tolist()
+
+        if show_base_cols:
+            res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
+            fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], showlegend=False))
+            if lbl_cols:
+                for _, r in df_b.iterrows():
+                    color, opac = get_so(r['Label'], '#1f77b4')
+                    fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
+
+        if show_base_rows:
+            if enable_clustering:
+                for cid in sorted(df_a['Cluster'].unique()):
+                    if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
+                    sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
+                    res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
+                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
+                    if lbl_rows:
+                        for _, r in sub.iterrows():
+                            color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
+                            if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+            else:
+                res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
+                fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], showlegend=False))
+                if lbl_rows:
+                    for _, r in df_a.iterrows():
+                        color, opac = get_so(r['Label'], '#d62728'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+
+        for i, layer in enumerate(df_p_list):
+            if not layer.empty and layer['Visible'].iloc[0]:
+                l_shape = layer['Shape'].iloc[0] 
+                if enable_clustering:
+                    for cid in sorted(layer['Cluster'].unique()):
+                        if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
+                        sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
+                        res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
+                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
+                        if lbl_passive:
+                            for _, r in sub.iterrows():
+                                c, o = get_so(r['Label'], bc, r.get('IsCore', True))
+                                if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=10))
+                else:
+                    res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
+                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], showlegend=False))
+                    if lbl_passive:
+                        for _, r in layer.iterrows():
+                            color, opac = get_so(r['Label'], '#555'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
+
+        fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
+        st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
 
         if final_report and enable_clustering:
             st.divider(); st.header("👥 Population Analysis")
@@ -365,9 +457,6 @@ with tab1:
                         <p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p>
                         <p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p>
                     </div>""", unsafe_allow_html=True)
-
-        fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
-        st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
 
 with tab2:
     st.header("🧹 MRI Data Cleaner")
@@ -443,7 +532,6 @@ with tab3:
                 )
                 
                 sum_weights = sum([weight_lookup.get(item, 0) for item in selected_items])
-                # USE ROBUST MATH FOR LIVE EDITOR
                 est_reach_000s = calculate_clustered_reach(sum_weights, selected_thresh, len(selected_items))
                 est_reach_pct = (est_reach_000s / st.session_state.universe_size) * 100
                 
