@@ -259,7 +259,6 @@ with tab1:
 
     # --- RENDER ---
     if st.session_state.processed_data:
-        # **FIXED**: Initialize 'fig' here so it exists for all subsequent blocks
         fig = go.Figure()
         
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
@@ -273,8 +272,11 @@ with tab1:
 
         if enable_clustering and HAS_SKLEARN:
             pool = pd.concat([df_a[['x','y']]] + [l[['x','y']] for l in df_p_list if not l.empty])
+            
+            # K-Means naturally enforces MUTUAL EXCLUSIVITY for the AI recommendations
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
             centroids = kmeans.cluster_centers_
+            
             df_a['Cluster'] = kmeans.predict(df_a[['x','y']])
             df_b['Cluster'] = kmeans.predict(df_b[['x','y']])
             for l in df_p_list: l['Cluster'] = kmeans.predict(l[['x','y']])
@@ -293,36 +295,47 @@ with tab1:
                         m = l['Cluster']==i
                         if any(m): l.loc[m, 'IsCore'] = np.sqrt((l.loc[m,'x']-centroids[i][0])**2 + (l.loc[m,'y']-centroids[i][1])**2) <= cutoff
                     
-                    # --- SMART COUNT CODE ALGORITHM (With Robust Math) ---
+                    # --- SMART COUNT CODE ALGORITHM ---
                     core_sigs = cluster_sigs[cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
-                    raw_pop = core_sigs.head(5)['Weight'].mean()
-                    target_pop = min(raw_pop, st.session_state.universe_size * 0.40)
-                    pop_pct = (target_pop / st.session_state.universe_size) * 100
                     
-                    best_k, best_thresh, best_diff = 10, 6, float('inf')
-                    for k in range(5, min(16, len(core_sigs) + 1)):
-                        k_items = core_sigs.head(k)
-                        sum_weights = k_items['Weight'].sum()
-                        min_t = (k // 2) + 1
-                        for t in range(min_t, k + 1):
-                            # USE THE NEW CLUSTERED REACH FUNCTION
-                            est_reach = calculate_clustered_reach(sum_weights, t, k)
-                            diff = abs(est_reach - target_pop)
-                            if diff < best_diff:
-                                best_diff = diff; best_k = k; best_thresh = t
-                    
-                    final_items = core_sigs.head(best_k)
-                    
-                    mindset_report.append({
-                        "id": i+1, 
-                        "color": px.colors.qualitative.Bold[i % 10], 
-                        "rows": final_items['Label'].tolist(), 
-                        "pop_000s": target_pop, 
-                        "percent": pop_pct, 
-                        "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), 
-                        "threshold": best_thresh,
-                        "is_broad": pop_pct > 40.0
-                    })
+                    if len(core_sigs) > 0:
+                        # RULE 2: Target Population is the Average of ALL statements in the bound
+                        raw_pop = core_sigs['Weight'].mean()
+                        
+                        # 40% Hard Cap
+                        target_pop = min(raw_pop, st.session_state.universe_size * 0.40)
+                        pop_pct = (target_pop / st.session_state.universe_size) * 100
+                        
+                        # Ensure we try to pull at least 5 statements (Rule 3)
+                        best_k, best_thresh, best_diff = len(core_sigs), max(1, (len(core_sigs)//2) + 1), float('inf')
+                        min_k = 5
+                        max_k = min(16, len(core_sigs) + 1)
+                        
+                        if len(core_sigs) >= min_k:
+                            for k in range(min_k, max_k):
+                                k_items = core_sigs.head(k)
+                                sum_weights = k_items['Weight'].sum()
+                                
+                                # Enforce Majority Rule
+                                min_t = (k // 2) + 1
+                                for t in range(min_t, k + 1):
+                                    est_reach = calculate_clustered_reach(sum_weights, t, k)
+                                    diff = abs(est_reach - target_pop)
+                                    if diff < best_diff:
+                                        best_diff = diff; best_k = k; best_thresh = t
+                        
+                        final_items = core_sigs.head(best_k)
+                        
+                        mindset_report.append({
+                            "id": i+1, 
+                            "color": px.colors.qualitative.Bold[i % 10], 
+                            "rows": final_items['Label'].tolist(), 
+                            "pop_000s": target_pop, 
+                            "percent": pop_pct, 
+                            "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), 
+                            "threshold": best_thresh,
+                            "is_broad": pop_pct > 40.0
+                        })
         else:
             df_a['Cluster'] = 0; df_b['Cluster'] = 0
             for l in df_p_list: l['Cluster'] = 0
@@ -342,10 +355,11 @@ with tab1:
                 if isinstance(layer, pd.DataFrame) and not layer.empty:
                     weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
             
-            sum_w = sum([weight_lookup.get(item, 0) for item in m['rows']])
-            m['pop_000s'] = calculate_clustered_reach(sum_w, m['threshold'], len(m['rows']))
-            m['percent'] = (m['pop_000s'] / st.session_state.universe_size) * 100
-            m['is_broad'] = m['percent'] > 40.0
+            if m['rows']:
+                sum_w = sum([weight_lookup.get(item, 0) for item in m['rows']])
+                m['pop_000s'] = calculate_clustered_reach(sum_w, m['threshold'], len(m['rows']))
+                m['percent'] = (m['pop_000s'] / st.session_state.universe_size) * 100
+                m['is_broad'] = m['percent'] > 40.0
             
             final_report.append(m)
 
@@ -449,13 +463,17 @@ with tab1:
                 with cols[idx % 3]:
                     badge_class = "size-badge-warning" if m.get('is_broad', False) else "size-badge"
                     broad_warn = "⚠️ Broad Audience" if m.get('is_broad', False) else ""
+                    
+                    # Safe text generation if user removes all items
+                    top_signals = ", ".join(m['rows'][:5]) + "..." if m['rows'] else "No statements selected."
+                    
                     st.markdown(f"""
                     <div class="mindset-card" style="border-left-color: {m['color']};">
                         <span class="{badge_class}">{m['percent']:.1f}% US</span>
                         <h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3>
                         <p style="color: #666; font-size: 0.9em; margin-bottom: 5px;">{broad_warn}</p>
                         <p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p>
-                        <p><b>Top Signals:</b> {", ".join(m['rows'][:5])}...</p>
+                        <p><b>Top Signals:</b> {top_signals}</p>
                     </div>""", unsafe_allow_html=True)
 
 with tab2:
@@ -519,20 +537,25 @@ with tab3:
                 if not selected_items:
                     st.error("Please select at least one attribute.")
                     continue
-                    
-                max_thresh = len(selected_items)
+                
+                # --- GUARDRAIL: ENFORCE MAJORITY RULE ---
+                num_items = len(selected_items)
+                max_thresh = num_items
+                min_majority = max(1, (num_items // 2) + 1) # Must be a majority
+                
                 if st.session_state[th_key] > max_thresh: st.session_state[th_key] = max_thresh
+                if st.session_state[th_key] < min_majority: st.session_state[th_key] = min_majority
                     
                 selected_thresh = st.slider(
                     "Threshold (Must agree with at least X statements):",
-                    min_value=1,
+                    min_value=min_majority,  # Prevents user from selecting less than majority
                     max_value=max_thresh,
                     value=st.session_state[th_key],
                     key=th_key
                 )
                 
                 sum_weights = sum([weight_lookup.get(item, 0) for item in selected_items])
-                est_reach_000s = calculate_clustered_reach(sum_weights, selected_thresh, len(selected_items))
+                est_reach_000s = calculate_clustered_reach(sum_weights, selected_thresh, num_items)
                 est_reach_pct = (est_reach_000s / st.session_state.universe_size) * 100
                 
                 col1, col2 = st.columns(2)
@@ -552,7 +575,7 @@ with tab3:
 
                 with col2:
                     st.markdown(f"**Population:** {est_reach_000s:,.0f} (000s)")
-                    st.markdown(f"*(AI Baseline: ~{t['percent']:.1f}%)*")
+                    st.markdown(f"*(AI Target Size: ~{t['percent']:.1f}%)*")
 
                 m_code = "(" + " + ".join([f"[{r}]" for r in selected_items]) + f") >= {selected_thresh}"
                 st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{m_code}</div>', unsafe_allow_html=True)
