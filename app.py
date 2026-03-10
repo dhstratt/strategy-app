@@ -27,6 +27,7 @@ st.markdown("""
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
+        .size-badge-custom { float: right; background: #4527a0; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; }
@@ -47,6 +48,13 @@ if 'lasso_labels' not in st.session_state: st.session_state.lasso_labels = []
 # --- HELPERS ---
 def normalize_strings(s_index):
     return s_index.astype(str).str.lower().str.replace(r'[^\w\s]', '', regex=True).str.strip()
+
+def truncate_label(text, max_words):
+    """Truncates long text labels to a specified number of words for cleaner mapping."""
+    words = str(text).split()
+    if len(words) > max_words:
+        return " ".join(words[:max_words]) + "..."
+    return text
 
 def clean_df(df_input, is_core=False):
     df = df_input.copy()
@@ -272,6 +280,9 @@ with tab1:
         lbl_rows = st.checkbox("Row Labels", True)
         lbl_passive = st.checkbox("Passive Labels", False)
         
+        # --- NEW UX TRUNCATION SLIDER ---
+        label_len = st.slider("Label Length (Words)", min_value=1, max_value=15, value=5, help="Shorten text on the map to reduce clutter. Hover over dots to see full text.")
+        
         placeholder_filters = st.container()
 
         st.divider()
@@ -304,7 +315,7 @@ with tab1:
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
-        # Map Rendering
+        # Background trace initializations (so legends render correctly)
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
         for l in df_p_list:
@@ -322,31 +333,65 @@ with tab1:
                 d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
+        # --- MAP RENDERING WITH HOVER AND TRUNCATION ---
+        
+        # 1. Base Columns (Brands)
         if show_base_cols:
             res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
-            fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], customdata=df_b['Label'], showlegend=False))
+            fig.add_trace(go.Scatter(
+                x=df_b['x'], y=df_b['y'], 
+                mode='markers', 
+                marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                text=df_b['Label'], 
+                customdata=df_b['Label'], 
+                hovertemplate="<b>%{customdata}</b><extra></extra>", # Shows full text on hover
+                showlegend=False
+            ))
             if lbl_cols:
                 for _, r in df_b.iterrows():
                     color, opac = get_so(r['Label'], '#1f77b4')
-                    fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
+                    short_lbl = truncate_label(r['Label'], label_len)
+                    fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
 
+        # 2. Base Rows (Statements)
         if show_base_rows:
             res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
-            fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], customdata=df_a['Label'], showlegend=False))
+            fig.add_trace(go.Scatter(
+                x=df_a['x'], y=df_a['y'], 
+                mode='markers', 
+                marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                text=df_a['Label'], 
+                customdata=df_a['Label'], 
+                hovertemplate="<b>%{customdata}</b><extra></extra>", # Shows full text on hover
+                showlegend=False
+            ))
             if lbl_rows:
                 for _, r in df_a.iterrows():
                     color, opac = get_so(r['Label'], '#d62728')
-                    if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+                    if opac > 0.3: 
+                        short_lbl = truncate_label(r['Label'], label_len)
+                        fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
 
+        # 3. Passive Layers (Demographics/Custom)
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
                 l_shape = layer['Shape'].iloc[0] 
                 res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
-                fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], customdata=layer['Label'], showlegend=False))
+                fig.add_trace(go.Scatter(
+                    x=layer['x'], y=layer['y'], 
+                    mode='markers', 
+                    marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                    text=layer['Label'], 
+                    customdata=layer['Label'], 
+                    hovertemplate="<b>%{customdata}</b><extra></extra>", # Shows full text on hover
+                    showlegend=False
+                ))
                 if lbl_passive:
                     for _, r in layer.iterrows():
                         color, opac = get_so(r['Label'], '#555')
-                        if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
+                        if opac > 0.3: 
+                            short_lbl = truncate_label(r['Label'], label_len)
+                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
 
         fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='lasso')
         
@@ -357,6 +402,7 @@ with tab1:
         lasso_labels = []
         if map_event and hasattr(map_event, 'selection') and map_event.selection.get("points"):
             for pt in map_event.selection["points"]:
+                # Grabs the FULL customdata label string so count codes remain accurate
                 if "customdata" in pt: lasso_labels.append(pt["customdata"])
                 elif "text" in pt: lasso_labels.append(pt["text"])
             
@@ -423,7 +469,6 @@ with tab3:
             lasso_key = "ms_items_lasso"
             th_lasso_key = "ms_thresh_lasso"
             
-            # Reset the multi-select box if the user draws a brand new lasso on the map
             if lasso_key not in st.session_state or set(st.session_state.get('last_lasso_drawn', [])) != set(st.session_state.lasso_labels):
                 st.session_state[lasso_key] = st.session_state.lasso_labels
                 st.session_state['last_lasso_drawn'] = st.session_state.lasso_labels.copy()
