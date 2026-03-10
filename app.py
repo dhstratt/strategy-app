@@ -28,10 +28,16 @@ st.markdown("""
             padding: 20px; border-radius: 10px; border-left: 10px solid #ccc;
             background-color: #f9f9f9; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
+        .custom-mindset-card {
+            padding: 20px; border-radius: 10px; border-left: 10px solid #673ab7;
+            background-color: #f3e5f5; margin-bottom: 25px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
+        .size-badge-custom { float: right; background: #4527a0; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
+        .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; }
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
         .status-ok { color: #2e7d32; font-weight: 800; font-size: 1.1em; }
         .status-err { color: #c62828; font-weight: 800; font-size: 1.1em; }
@@ -46,6 +52,7 @@ if 'universe_size' not in st.session_state: st.session_state.universe_size = 258
 if 'df_brands' not in st.session_state: st.session_state.df_brands = pd.DataFrame()
 if 'df_attrs' not in st.session_state: st.session_state.df_attrs = pd.DataFrame()
 if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
+if 'lasso_labels' not in st.session_state: st.session_state.lasso_labels = []
 
 # --- HELPERS ---
 def normalize_strings(s_index):
@@ -87,7 +94,6 @@ def rotate_coords(df_to_rot, angle_deg):
     return df_new
 
 def calculate_clustered_reach(sum_weights, threshold, num_items):
-    """Revised formula for Clustered Reach (Overlap Aware)"""
     if threshold == 0: return 0
     overlap_factor = 0.7 
     divisor = threshold + (num_items - threshold) * overlap_factor
@@ -251,8 +257,8 @@ with tab1:
         placeholder_filters = st.container()
 
         st.divider()
-        st.header("⚗️ Mindset Maker")
-        enable_clustering = st.checkbox("Enable Mindset Discovery", False) 
+        st.header("⚗️ AI Mindset Discovery")
+        enable_clustering = st.checkbox("Enable Auto-Discovery", False) 
         num_clusters = st.slider("Number of Mindsets", 2, 8, 4)
         strictness = st.slider("🎯 Definition Tightness", 0, 100, 30)
         map_rotation = st.slider("🔄 Map Rotation", 0, 360, 0, step=90)
@@ -272,8 +278,6 @@ with tab1:
 
         if enable_clustering and HAS_SKLEARN:
             pool = pd.concat([df_a[['x','y']]] + [l[['x','y']] for l in df_p_list if not l.empty])
-            
-            # K-Means naturally enforces MUTUAL EXCLUSIVITY for the AI recommendations
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
             centroids = kmeans.cluster_centers_
             
@@ -299,14 +303,10 @@ with tab1:
                     core_sigs = cluster_sigs[cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
                     
                     if len(core_sigs) > 0:
-                        # RULE 2: Target Population is the Average of ALL statements in the bound
                         raw_pop = core_sigs['Weight'].mean()
-                        
-                        # 40% Hard Cap
                         target_pop = min(raw_pop, st.session_state.universe_size * 0.40)
                         pop_pct = (target_pop / st.session_state.universe_size) * 100
                         
-                        # Ensure we try to pull at least 5 statements (Rule 3)
                         best_k, best_thresh, best_diff = len(core_sigs), max(1, (len(core_sigs)//2) + 1), float('inf')
                         min_k = 5
                         max_k = min(16, len(core_sigs) + 1)
@@ -315,8 +315,6 @@ with tab1:
                             for k in range(min_k, max_k):
                                 k_items = core_sigs.head(k)
                                 sum_weights = k_items['Weight'].sum()
-                                
-                                # Enforce Majority Rule
                                 min_t = (k // 2) + 1
                                 for t in range(min_t, k + 1):
                                     est_reach = calculate_clustered_reach(sum_weights, t, k)
@@ -409,7 +407,7 @@ with tab1:
 
         if show_base_cols:
             res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
-            fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], showlegend=False))
+            fig.add_trace(go.Scatter(x=df_b['x'], y=df_b['y'], mode='markers', marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=df_b['Label'], customdata=df_b['Label'], showlegend=False))
             if lbl_cols:
                 for _, r in df_b.iterrows():
                     color, opac = get_so(r['Label'], '#1f77b4')
@@ -421,14 +419,14 @@ with tab1:
                     if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
                     sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                     res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
+                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], customdata=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
                     if lbl_rows:
                         for _, r in sub.iterrows():
                             color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
                             if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
             else:
                 res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
-                fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], showlegend=False))
+                fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], customdata=df_a['Label'], showlegend=False))
                 if lbl_rows:
                     for _, r in df_a.iterrows():
                         color, opac = get_so(r['Label'], '#d62728'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
@@ -441,32 +439,50 @@ with tab1:
                         if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
                         sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
                         res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
+                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], customdata=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
                         if lbl_passive:
                             for _, r in sub.iterrows():
                                 c, o = get_so(r['Label'], bc, r.get('IsCore', True))
                                 if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=10))
                 else:
                     res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
-                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], showlegend=False))
+                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], customdata=layer['Label'], showlegend=False))
                     if lbl_passive:
                         for _, r in layer.iterrows():
                             color, opac = get_so(r['Label'], '#555'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
 
-        fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='pan')
-        st.plotly_chart(fig, use_container_width=True, config={'editable': True, 'scrollZoom': True})
+        fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='lasso')
+        
+        # --- PLOTLY SELECTION EVENT HANDLER ---
+        map_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode=('lasso', 'box'), key="main_map")
+        
+        # Capture Lassoed Points and Filter out Brands
+        lasso_labels = []
+        if map_event and hasattr(map_event, 'selection') and map_event.selection.get("points"):
+            for pt in map_event.selection["points"]:
+                if "customdata" in pt: lasso_labels.append(pt["customdata"])
+                elif "text" in pt: lasso_labels.append(pt["text"])
+            
+            # Remove Core Brands from selection (Brands shouldn't be in mindsets)
+            core_brands = set(st.session_state.df_brands['Label'])
+            lasso_labels = [lbl for lbl in lasso_labels if lbl not in core_brands]
+            
+            st.session_state.lasso_labels = lasso_labels
+        else:
+            st.session_state.lasso_labels = []
+
+        # Instant UI Feedback for Lasso
+        if st.session_state.lasso_labels:
+            st.markdown(f'<div class="success-box">✅ You lassooed {len(st.session_state.lasso_labels)} psychographic statements! Go to the Count Code Editor tab to finalize your Custom Mindset.</div>', unsafe_allow_html=True)
 
         if final_report and enable_clustering:
-            st.divider(); st.header("👥 Population Analysis")
+            st.divider(); st.header("👥 Population Analysis (AI Baseline)")
             cols = st.columns(3)
             for idx, m in enumerate(final_report):
                 with cols[idx % 3]:
                     badge_class = "size-badge-warning" if m.get('is_broad', False) else "size-badge"
                     broad_warn = "⚠️ Broad Audience" if m.get('is_broad', False) else ""
-                    
-                    # Safe text generation if user removes all items
                     top_signals = ", ".join(m['rows'][:5]) + "..." if m['rows'] else "No statements selected."
-                    
                     st.markdown(f"""
                     <div class="mindset-card" style="border-left-color: {m['color']};">
                         <span class="{badge_class}">{m['percent']:.1f}% US</span>
@@ -504,20 +520,83 @@ with tab2:
 
 with tab3:
     st.header("📟 Count Code Editor")
-    st.markdown("Review the AI's suggested formulas below. You can **manually add or remove traits** and **adjust the threshold** to fine-tune the final audience.")
+    st.markdown("Review the AI's suggested formulas or use the map Lasso to build your own custom audience.")
     
-    if not st.session_state.mindset_report: 
-        st.warning("Run Discovery on the Strategy Map tab first.")
+    if not st.session_state.mindset_report and not st.session_state.lasso_labels: 
+        st.warning("Run Discovery or draw a Lasso on the Strategy Map tab first.")
     else:
         weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
         for layer in st.session_state.passive_data:
             if isinstance(layer, pd.DataFrame) and not layer.empty and 'Label' in layer.columns and 'Weight' in layer.columns:
                 weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
-        
         all_available_labels = sorted(list(weight_lookup.keys()))
 
+        # --- CUSTOM LASSO MINDSET UI ---
+        if st.session_state.lasso_labels:
+            with st.expander("🎯 Your Custom Lasso Mindset", expanded=True):
+                st.markdown("""<div class="custom-mindset-card">
+                    <h3 style="color: #4527a0; margin-top:0;">Custom Lasso Selection</h3>
+                    <p>This count code is generated entirely from the statements you drew a box around on the map.</p>
+                </div>""", unsafe_allow_html=True)
+                
+                lasso_key = "ms_items_lasso"
+                th_lasso_key = "ms_thresh_lasso"
+                
+                # Default states for Lasso UI
+                if lasso_key not in st.session_state or set(st.session_state[lasso_key]) != set(st.session_state.lasso_labels):
+                    st.session_state[lasso_key] = st.session_state.lasso_labels
+                
+                lasso_items = st.multiselect(
+                    "Lassoed Attributes (Add or Remove):", 
+                    options=all_available_labels,
+                    default=st.session_state[lasso_key],
+                    key=lasso_key
+                )
+                
+                if lasso_items:
+                    l_num_items = len(lasso_items)
+                    l_min_majority = max(1, (l_num_items // 2) + 1)
+                    
+                    if th_lasso_key not in st.session_state or st.session_state[th_lasso_key] < l_min_majority or st.session_state[th_lasso_key] > l_num_items:
+                        st.session_state[th_lasso_key] = l_min_majority
+
+                    l_thresh = st.slider(
+                        "Custom Threshold (Majority Rule Enforced):",
+                        min_value=l_min_majority, max_value=l_num_items,
+                        value=st.session_state[th_lasso_key],
+                        key=th_lasso_key
+                    )
+                    
+                    # Target pop is the average of the lasso items
+                    l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
+                    l_sum_w = sum([weight_lookup.get(item, 0) for item in lasso_items])
+                    l_est_reach = calculate_clustered_reach(l_sum_w, l_thresh, l_num_items)
+                    l_pct = (l_est_reach / st.session_state.universe_size) * 100
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        bar_color = '#4527a0' if l_pct <= 40 else '#c62828'
+                        st.markdown(f"""
+                            <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
+                                <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+                                <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Reach</span>
+                                <span style="color: #666">40% Cap</span>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold.")
+
+                    with col2:
+                        st.markdown(f"**Population:** {l_est_reach:,.0f} (000s)")
+                        st.markdown(f"*(Lasso Target Average: ~{(l_target_pop/st.session_state.universe_size)*100:.1f}%)*")
+
+                    l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
+                    st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
+
+        # --- AI GENERATED MINDSETS UI ---
         for t in st.session_state.mindset_report:
-            with st.expander(f"Mindset {t['id']} Formula Builder", expanded=True):
+            with st.expander(f"AI Baseline: Mindset {t['id']}", expanded=False):
                 ai_hash = hash(tuple(t['rows']))
                 ms_key = f"ms_items_{t['id']}_{ai_hash}"
                 th_key = f"ms_thresh_{t['id']}_{ai_hash}"
@@ -537,18 +616,17 @@ with tab3:
                 if not selected_items:
                     st.error("Please select at least one attribute.")
                     continue
-                
-                # --- GUARDRAIL: ENFORCE MAJORITY RULE ---
+                    
                 num_items = len(selected_items)
                 max_thresh = num_items
-                min_majority = max(1, (num_items // 2) + 1) # Must be a majority
+                min_majority = max(1, (num_items // 2) + 1) 
                 
                 if st.session_state[th_key] > max_thresh: st.session_state[th_key] = max_thresh
                 if st.session_state[th_key] < min_majority: st.session_state[th_key] = min_majority
                     
                 selected_thresh = st.slider(
-                    "Threshold (Must agree with at least X statements):",
-                    min_value=min_majority,  # Prevents user from selecting less than majority
+                    f"Threshold for M{t['id']} (Majority Rule):",
+                    min_value=min_majority,
                     max_value=max_thresh,
                     value=st.session_state[th_key],
                     key=th_key
