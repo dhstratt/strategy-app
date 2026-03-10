@@ -554,7 +554,6 @@ with tab2:
     st.header("🧹 MRI Data Cleaner")
     st.markdown("Use this tool to clean up messy MRI exports so they are perfectly formatted for the app.")
     
-    # --- NEW MATRIX TOGGLE ---
     cleaner_mode = st.radio("What type of data are you cleaning?", ["Base Map Data (Brands x Attributes)", "Correlation Matrix (Square Crosstab for Calibration)"])
     
     raw_mri = st.file_uploader("Upload Raw Export", type=["csv", "xlsx", "xls"])
@@ -586,16 +585,19 @@ with tab2:
                 
                 df_c = data_r.iloc[:, c_idx]; df_c.columns = h
                 
-                df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
-                for c in df_c.columns[1:]: 
-                    df_c[c] = pd.to_numeric(df_c[c].astype(str).str.replace(',', ''), errors='coerce')
+                # --- POSITIONAL INDEX FIX TO PREVENT DATAFRAME ERROR ---
+                df_c.iloc[:, 0] = df_c.iloc[:, 0].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
+                
+                for i in range(1, len(df_c.columns)):
+                    df_c.iloc[:, i] = pd.to_numeric(df_c.iloc[:, i].astype(str).str.replace(',', '', regex=False), errors='coerce')
+                
+                df_c = df_c.loc[:, ~df_c.columns.duplicated()]
                 df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
                 
                 st.success("✅ Base Map Data Cleaned!")
                 st.download_button("Download Cleaned Base Data", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Base_Data.csv")
 
             else:
-                # --- NEW SQUARE MATRIX CLEANER ---
                 idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("%|Percent|Target", case=False, regex=True).any())
                 
                 statement_row = df_r.iloc[idx-1].tolist()
@@ -619,17 +621,20 @@ with tab2:
                 
                 df_c = data_r.iloc[:, c_idx]; df_c.columns = h
                 
-                df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
+                # --- POSITIONAL INDEX FIX TO PREVENT DATAFRAME ERROR ---
+                df_c.iloc[:, 0] = df_c.iloc[:, 0].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
+                
                 new_cols = ['Attitude']
                 for col in df_c.columns[1:]:
                     clean_col = str(col).replace('General Attitudes: ', '').replace('_Any Agree', '').replace('"', '').strip()
                     new_cols.append(clean_col)
                 df_c.columns = new_cols
                 
-                for c in df_c.columns[1:]:
-                    df_c[c] = df_c[c].astype(str).str.replace(r'[%,]', '', regex=True)
-                    df_c[c] = pd.to_numeric(df_c[c], errors='coerce') / 100.0 
+                for i in range(1, len(df_c.columns)):
+                    df_c.iloc[:, i] = df_c.iloc[:, i].astype(str).str.replace(r'[%,]', '', regex=True)
+                    df_c.iloc[:, i] = pd.to_numeric(df_c.iloc[:, i], errors='coerce') / 100.0 
                 
+                df_c = df_c.loc[:, ~df_c.columns.duplicated()]
                 df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
                 
                 st.success("✅ Correlation Matrix Cleaned and Formatted!")
