@@ -7,13 +7,6 @@ import io
 import pickle
 import re
 
-# --- SAFE IMPORT ---
-try:
-    from sklearn.cluster import KMeans
-    HAS_SKLEARN = True
-except ImportError:
-    HAS_SKLEARN = False
-
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="The Consumer Landscape")
 
@@ -34,21 +27,18 @@ st.markdown("""
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
-        .size-badge-custom { float: right; background: #4527a0; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; }
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
-        .status-ok { color: #2e7d32; font-weight: 800; font-size: 1.1em; }
-        .status-err { color: #c62828; font-weight: 800; font-size: 1.1em; }
     </style>
 """, unsafe_allow_html=True)
 
 # --- SESSION STATE ---
 if 'processed_data' not in st.session_state: st.session_state.processed_data = False
 if 'passive_data' not in st.session_state: st.session_state.passive_data = [] 
-if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
 if 'universe_size' not in st.session_state: st.session_state.universe_size = 258000.0
+if 'exact_universe_found' not in st.session_state: st.session_state.exact_universe_found = False
 if 'df_brands' not in st.session_state: st.session_state.df_brands = pd.DataFrame()
 if 'df_attrs' not in st.session_state: st.session_state.df_attrs = pd.DataFrame()
 if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
@@ -61,12 +51,16 @@ def normalize_strings(s_index):
 def clean_df(df_input, is_core=False):
     df = df_input.copy()
     label_col = df.columns[0]
+    
+    # Auto-clean "_Any Agree"
     if df[label_col].astype(str).str.contains('_Any Agree', na=False).any():
         df = df[df[label_col].astype(str).str.contains('_Any Agree', na=False)]
         df[label_col] = df[label_col].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
         df[label_col] = df[label_col].astype(str).str.replace('"', '', regex=False)
     
     df = df.set_index(label_col)
+    
+    # Clean numeric data
     for col in df.columns:
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(r'[,$%]', '', regex=True)
@@ -74,11 +68,21 @@ def clean_df(df_input, is_core=False):
             df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.fillna(0)
     
+    # Check for Study Universe
     if is_core:
         u_idx = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
         if any(u_idx):
-            st.session_state.universe_size = float(df[u_idx].iloc[0].sum())
+            calc_size = float(df[u_idx].iloc[0].sum())
+            if calc_size > 0:
+                st.session_state.universe_size = calc_size
+                st.session_state.exact_universe_found = True
+            else:
+                st.session_state.exact_universe_found = False
+        else:
+            st.session_state.exact_universe_found = False
+            st.session_state.universe_size = 258000.0 # Default US Adult estimate
     
+    # Drop Total columns/rows for the map math
     mask = ~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
     return df.loc[mask, valid_cols]
@@ -98,6 +102,9 @@ def calculate_clustered_reach(sum_weights, threshold, num_items):
     overlap_factor = 0.7 
     divisor = threshold + (num_items - threshold) * overlap_factor
     return sum_weights / divisor
+
+def get_safe_universe():
+    return st.session_state.universe_size if st.session_state.universe_size > 0 else 258000.0
 
 # ==========================================
 # DATA PROCESSING ENGINE
@@ -184,6 +191,9 @@ tab1, tab2, tab3 = st.tabs(["🗺️ Strategic Map", "🧹 MRI Cleaner", "📟 C
 with tab1:
     st.title("🗺️ The Consumer Landscape")
     
+    if st.session_state.processed_data and not st.session_state.exact_universe_found:
+        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s) to calculate reach percentages.")
+        
     with st.sidebar:
         st.header("📂 Data & Projects")
         with st.expander("💾 Manage Project", expanded=False):
@@ -196,12 +206,20 @@ with tab1:
                     st.session_state.passive_data = p_data['passive_data']
                     st.session_state.accuracy = p_data['accuracy']
                     st.session_state.universe_size = float(p_data.get('universe_size', 258000.0))
+                    st.session_state.exact_universe_found = p_data.get('exact_universe_found', False)
                     st.session_state.processed_data = True
                     st.rerun()
                 except: st.error("Load failed.")
             if st.session_state.processed_data:
                 proj_name = st.text_input("Project Name", "Strategy_Map")
-                proj_dict = {'df_brands': st.session_state.df_brands, 'df_attrs': st.session_state.df_attrs, 'passive_data': st.session_state.passive_data, 'accuracy': st.session_state.accuracy, 'universe_size': st.session_state.universe_size}
+                proj_dict = {
+                    'df_brands': st.session_state.df_brands, 
+                    'df_attrs': st.session_state.df_attrs, 
+                    'passive_data': st.session_state.passive_data, 
+                    'accuracy': st.session_state.accuracy, 
+                    'universe_size': st.session_state.universe_size,
+                    'exact_universe_found': st.session_state.exact_universe_found
+                }
                 buffer = io.BytesIO(); pickle.dump(proj_dict, buffer); buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
 
@@ -257,117 +275,19 @@ with tab1:
         placeholder_filters = st.container()
 
         st.divider()
-        st.header("⚗️ AI Mindset Discovery")
-        enable_clustering = st.checkbox("Enable Auto-Discovery", False) 
-        num_clusters = st.slider("Number of Mindsets", 2, 8, 4)
-        strictness = st.slider("🎯 Definition Tightness", 0, 100, 30)
-        map_rotation = st.slider("🔄 Map Rotation", 0, 360, 0, step=90)
+        st.header("🔄 View Settings")
+        map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
 
     # --- RENDER ---
     if st.session_state.processed_data:
+        safe_univ = get_safe_universe()
         fig = go.Figure()
         
         df_b = rotate_coords(st.session_state.df_brands.copy(), map_rotation)
         df_a = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
         df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source if isinstance(l, pd.DataFrame) and 'x' in l.columns]
-        
-        mindset_report = []
-        df_a['IsCore'] = True
-        for l in df_p_list: l['IsCore'] = True
 
-        if enable_clustering and HAS_SKLEARN:
-            pool = pd.concat([df_a[['x','y']]] + [l[['x','y']] for l in df_p_list if not l.empty])
-            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
-            centroids = kmeans.cluster_centers_
-            
-            df_a['Cluster'] = kmeans.predict(df_a[['x','y']])
-            df_b['Cluster'] = kmeans.predict(df_b[['x','y']])
-            for l in df_p_list: l['Cluster'] = kmeans.predict(l[['x','y']])
-            
-            for i in range(num_clusters):
-                c_actives = df_a[df_a['Cluster'] == i].copy()
-                c_actives['dist'] = np.sqrt((c_actives['x']-centroids[i][0])**2 + (c_actives['y']-centroids[i][1])**2)
-                c_passives = pd.concat([l[l['Cluster'] == i] for l in df_p_list if not l.empty]) if df_p_list else pd.DataFrame()
-                if not c_passives.empty: c_passives['dist'] = np.sqrt((c_passives['x']-centroids[i][0])**2 + (c_passives['y']-centroids[i][1])**2)
-                
-                cluster_sigs = pd.concat([c_actives[['Label','Weight','dist']], c_passives[['Label','Weight','dist']] if not c_passives.empty else None]).dropna()
-                if not cluster_sigs.empty:
-                    cutoff = np.percentile(cluster_sigs['dist'], 100 - strictness)
-                    df_a.loc[df_a['Cluster']==i, 'IsCore'] = c_actives['dist'] <= cutoff
-                    for l in df_p_list:
-                        m = l['Cluster']==i
-                        if any(m): l.loc[m, 'IsCore'] = np.sqrt((l.loc[m,'x']-centroids[i][0])**2 + (l.loc[m,'y']-centroids[i][1])**2) <= cutoff
-                    
-                    # --- SMART COUNT CODE ALGORITHM ---
-                    core_sigs = cluster_sigs[cluster_sigs['dist'] <= cutoff].sort_values('dist').drop_duplicates('Label')
-                    
-                    if len(core_sigs) > 0:
-                        raw_pop = core_sigs['Weight'].mean()
-                        target_pop = min(raw_pop, st.session_state.universe_size * 0.40)
-                        pop_pct = (target_pop / st.session_state.universe_size) * 100
-                        
-                        best_k, best_thresh, best_diff = len(core_sigs), max(1, (len(core_sigs)//2) + 1), float('inf')
-                        min_k = 5
-                        max_k = min(16, len(core_sigs) + 1)
-                        
-                        if len(core_sigs) >= min_k:
-                            for k in range(min_k, max_k):
-                                k_items = core_sigs.head(k)
-                                sum_weights = k_items['Weight'].sum()
-                                min_t = (k // 2) + 1
-                                for t in range(min_t, k + 1):
-                                    est_reach = calculate_clustered_reach(sum_weights, t, k)
-                                    diff = abs(est_reach - target_pop)
-                                    if diff < best_diff:
-                                        best_diff = diff; best_k = k; best_thresh = t
-                        
-                        final_items = core_sigs.head(best_k)
-                        
-                        mindset_report.append({
-                            "id": i+1, 
-                            "color": px.colors.qualitative.Bold[i % 10], 
-                            "rows": final_items['Label'].tolist(), 
-                            "pop_000s": target_pop, 
-                            "percent": pop_pct, 
-                            "brands": df_b[df_b['Cluster']==i]['Label'].tolist(), 
-                            "threshold": best_thresh,
-                            "is_broad": pop_pct > 40.0
-                        })
-        else:
-            df_a['Cluster'] = 0; df_b['Cluster'] = 0
-            for l in df_p_list: l['Cluster'] = 0
-        
-        # APPLY MANUAL OVERRIDES
-        final_report = []
-        for i, m in enumerate(mindset_report):
-            ai_hash = hash(tuple(m['rows']))
-            ms_key = f"ms_items_{m['id']}_{ai_hash}"
-            th_key = f"ms_thresh_{m['id']}_{ai_hash}"
-            
-            if ms_key in st.session_state: m['rows'] = st.session_state[ms_key]
-            if th_key in st.session_state: m['threshold'] = st.session_state[th_key]
-                
-            weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
-            for layer in st.session_state.passive_data:
-                if isinstance(layer, pd.DataFrame) and not layer.empty:
-                    weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
-            
-            if m['rows']:
-                sum_w = sum([weight_lookup.get(item, 0) for item in m['rows']])
-                m['pop_000s'] = calculate_clustered_reach(sum_w, m['threshold'], len(m['rows']))
-                m['percent'] = (m['pop_000s'] / st.session_state.universe_size) * 100
-                m['is_broad'] = m['percent'] > 40.0
-            
-            final_report.append(m)
-
-        st.session_state.mindset_report = final_report
-
-        if enable_clustering:
-            v_mode = st.selectbox("👁️ View Focus:", ["Show All"] + [f"Mindset {m['id']}" for m in mindset_report])
-        else:
-            v_mode = "Show All"
-            
         with placeholder_filters:
             with st.expander("🔍 Filter Base Map", expanded=False):
                 show_base_cols = st.checkbox("Show Columns (Dots)", True)
@@ -384,18 +304,15 @@ with tab1:
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
-        if enable_clustering:
-            for i in range(num_clusters):
-                fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color=px.colors.qualitative.Bold[i % 10]), legendgroup=f"M{i+1}", showlegend=True, name=f"Mindset {i+1}"))
-        else:
-            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
-            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
-            for l in df_p_list:
-                if not l.empty:
-                    fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#555', symbol=l['Shape'].iloc[0]), name=l['LayerName'].iloc[0]))
+        # Map Rendering
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
+        for l in df_p_list:
+            if not l.empty:
+                fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#555', symbol=l['Shape'].iloc[0]), name=l['LayerName'].iloc[0]))
 
-        def get_so(lbl, base_c, is_core=True):
-            if f_brand == "None": return (base_c, 0.9) if is_core else ('#eeeeee', 0.15)
+        def get_so(lbl, base_c):
+            if f_brand == "None": return (base_c, 0.9) 
             return (base_c, 1.0) if (lbl == f_brand or lbl in hl) else ('#d3d3d3', 0.2)
 
         hl = []
@@ -414,42 +331,22 @@ with tab1:
                     fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
 
         if show_base_rows:
-            if enable_clustering:
-                for cid in sorted(df_a['Cluster'].unique()):
-                    if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
-                    sub = df_a[df_a['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
-                    res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                    fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=sub['Label'], customdata=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
-                    if lbl_rows:
-                        for _, r in sub.iterrows():
-                            color, opac = get_so(r['Label'], bc, r.get('IsCore', True))
-                            if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
-            else:
-                res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
-                fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], customdata=df_a['Label'], showlegend=False))
-                if lbl_rows:
-                    for _, r in df_a.iterrows():
-                        color, opac = get_so(r['Label'], '#d62728'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+            res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
+            fig.add_trace(go.Scatter(x=df_a['x'], y=df_a['y'], mode='markers', marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res]), text=df_a['Label'], customdata=df_a['Label'], showlegend=False))
+            if lbl_rows:
+                for _, r in df_a.iterrows():
+                    color, opac = get_so(r['Label'], '#d62728')
+                    if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
 
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
                 l_shape = layer['Shape'].iloc[0] 
-                if enable_clustering:
-                    for cid in sorted(layer['Cluster'].unique()):
-                        if v_mode != "Show All" and v_mode != f"Mindset {cid+1}": continue
-                        sub = layer[layer['Cluster'] == cid]; bc = px.colors.qualitative.Bold[cid % 10]
-                        res = [get_so(r['Label'], bc, r.get('IsCore', True)) for _,r in sub.iterrows()]
-                        fig.add_trace(go.Scatter(x=sub['x'], y=sub['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=sub['Label'], customdata=sub['Label'], legendgroup=f"M{cid+1}", showlegend=False))
-                        if lbl_passive:
-                            for _, r in sub.iterrows():
-                                c, o = get_so(r['Label'], bc, r.get('IsCore', True))
-                                if o > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=c, ax=0, ay=-15, font=dict(color=c, size=10))
-                else:
-                    res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
-                    fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], customdata=layer['Label'], showlegend=False))
-                    if lbl_passive:
-                        for _, r in layer.iterrows():
-                            color, opac = get_so(r['Label'], '#555'); fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
+                res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
+                fig.add_trace(go.Scatter(x=layer['x'], y=layer['y'], mode='markers', marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), text=layer['Label'], customdata=layer['Label'], showlegend=False))
+                if lbl_passive:
+                    for _, r in layer.iterrows():
+                        color, opac = get_so(r['Label'], '#555')
+                        if opac > 0.3: fig.add_annotation(x=r['x'], y=r['y'], text=r['Label'], showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
 
         fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='lasso')
         
@@ -463,7 +360,6 @@ with tab1:
                 if "customdata" in pt: lasso_labels.append(pt["customdata"])
                 elif "text" in pt: lasso_labels.append(pt["text"])
             
-            # Remove Core Brands from selection (Brands shouldn't be in mindsets)
             core_brands = set(st.session_state.df_brands['Label'])
             lasso_labels = [lbl for lbl in lasso_labels if lbl not in core_brands]
             
@@ -471,26 +367,8 @@ with tab1:
         else:
             st.session_state.lasso_labels = []
 
-        # Instant UI Feedback for Lasso
         if st.session_state.lasso_labels:
             st.markdown(f'<div class="success-box">✅ You lassooed {len(st.session_state.lasso_labels)} psychographic statements! Go to the Count Code Editor tab to finalize your Custom Mindset.</div>', unsafe_allow_html=True)
-
-        if final_report and enable_clustering:
-            st.divider(); st.header("👥 Population Analysis (AI Baseline)")
-            cols = st.columns(3)
-            for idx, m in enumerate(final_report):
-                with cols[idx % 3]:
-                    badge_class = "size-badge-warning" if m.get('is_broad', False) else "size-badge"
-                    broad_warn = "⚠️ Broad Audience" if m.get('is_broad', False) else ""
-                    top_signals = ", ".join(m['rows'][:5]) + "..." if m['rows'] else "No statements selected."
-                    st.markdown(f"""
-                    <div class="mindset-card" style="border-left-color: {m['color']};">
-                        <span class="{badge_class}">{m['percent']:.1f}% US</span>
-                        <h3 style="color: {m['color']}; margin-top:0;">Mindset {m['id']}</h3>
-                        <p style="color: #666; font-size: 0.9em; margin-bottom: 5px;">{broad_warn}</p>
-                        <p><b>Vol:</b> {m['pop_000s']:,.0f} (000s)</p>
-                        <p><b>Top Signals:</b> {top_signals}</p>
-                    </div>""", unsafe_allow_html=True)
 
 with tab2:
     st.header("🧹 MRI Data Cleaner")
@@ -520,11 +398,15 @@ with tab2:
 
 with tab3:
     st.header("📟 Count Code Editor")
-    st.markdown("Review the AI's suggested formulas or use the map Lasso to build your own custom audience.")
+    st.markdown("Use the Lasso tool on the Strategic Map to draw boundaries and build your custom audiences here.")
     
-    if not st.session_state.mindset_report and not st.session_state.lasso_labels: 
-        st.warning("Run Discovery or draw a Lasso on the Strategy Map tab first.")
+    if st.session_state.processed_data and not st.session_state.exact_universe_found:
+        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s) to calculate reach percentages.")
+
+    if not st.session_state.lasso_labels: 
+        st.info("👈 Draw a Lasso on the map to start building your count code!")
     else:
+        safe_univ_tab3 = get_safe_universe()
         weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
         for layer in st.session_state.passive_data:
             if isinstance(layer, pd.DataFrame) and not layer.empty and 'Label' in layer.columns and 'Weight' in layer.columns:
@@ -532,128 +414,63 @@ with tab3:
         all_available_labels = sorted(list(weight_lookup.keys()))
 
         # --- CUSTOM LASSO MINDSET UI ---
-        if st.session_state.lasso_labels:
-            with st.expander("🎯 Your Custom Lasso Mindset", expanded=True):
-                st.markdown("""<div class="custom-mindset-card">
-                    <h3 style="color: #4527a0; margin-top:0;">Custom Lasso Selection</h3>
-                    <p>This count code is generated entirely from the statements you drew a box around on the map.</p>
-                </div>""", unsafe_allow_html=True)
+        with st.container():
+            st.markdown("""<div class="custom-mindset-card">
+                <h3 style="color: #4527a0; margin-top:0;">Custom Lasso Selection</h3>
+                <p>This count code is generated from the statements you drew a box around on the map.</p>
+            </div>""", unsafe_allow_html=True)
+            
+            lasso_key = "ms_items_lasso"
+            th_lasso_key = "ms_thresh_lasso"
+            
+            # Reset the multi-select box if the user draws a brand new lasso on the map
+            if lasso_key not in st.session_state or set(st.session_state.get('last_lasso_drawn', [])) != set(st.session_state.lasso_labels):
+                st.session_state[lasso_key] = st.session_state.lasso_labels
+                st.session_state['last_lasso_drawn'] = st.session_state.lasso_labels.copy()
+            
+            lasso_items = st.multiselect(
+                "Lassoed Attributes (Add or Remove manually if needed):", 
+                options=all_available_labels,
+                default=st.session_state[lasso_key],
+                key=lasso_key
+            )
+            
+            if lasso_items:
+                l_num_items = len(lasso_items)
+                l_min_majority = max(1, (l_num_items // 2) + 1)
                 
-                lasso_key = "ms_items_lasso"
-                th_lasso_key = "ms_thresh_lasso"
-                
-                # Default states for Lasso UI
-                if lasso_key not in st.session_state or set(st.session_state[lasso_key]) != set(st.session_state.lasso_labels):
-                    st.session_state[lasso_key] = st.session_state.lasso_labels
-                
-                lasso_items = st.multiselect(
-                    "Lassoed Attributes (Add or Remove):", 
-                    options=all_available_labels,
-                    default=st.session_state[lasso_key],
-                    key=lasso_key
+                if th_lasso_key not in st.session_state or st.session_state[th_lasso_key] < l_min_majority or st.session_state[th_lasso_key] > l_num_items:
+                    st.session_state[th_lasso_key] = l_min_majority
+
+                l_thresh = st.slider(
+                    "Custom Threshold (Majority Rule Enforced):",
+                    min_value=l_min_majority, max_value=l_num_items,
+                    value=st.session_state[th_lasso_key],
+                    key=th_lasso_key
                 )
                 
-                if lasso_items:
-                    l_num_items = len(lasso_items)
-                    l_min_majority = max(1, (l_num_items // 2) + 1)
-                    
-                    if th_lasso_key not in st.session_state or st.session_state[th_lasso_key] < l_min_majority or st.session_state[th_lasso_key] > l_num_items:
-                        st.session_state[th_lasso_key] = l_min_majority
-
-                    l_thresh = st.slider(
-                        "Custom Threshold (Majority Rule Enforced):",
-                        min_value=l_min_majority, max_value=l_num_items,
-                        value=st.session_state[th_lasso_key],
-                        key=th_lasso_key
-                    )
-                    
-                    # Target pop is the average of the lasso items
-                    l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
-                    l_sum_w = sum([weight_lookup.get(item, 0) for item in lasso_items])
-                    l_est_reach = calculate_clustered_reach(l_sum_w, l_thresh, l_num_items)
-                    l_pct = (l_est_reach / st.session_state.universe_size) * 100
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        bar_color = '#4527a0' if l_pct <= 40 else '#c62828'
-                        st.markdown(f"""
-                            <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
-                                <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin-top: 5px;">
-                                <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Reach</span>
-                                <span style="color: #666">40% Cap</span>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold.")
-
-                    with col2:
-                        st.markdown(f"**Population:** {l_est_reach:,.0f} (000s)")
-                        st.markdown(f"*(Lasso Target Average: ~{(l_target_pop/st.session_state.universe_size)*100:.1f}%)*")
-
-                    l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
-                    st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
-
-        # --- AI GENERATED MINDSETS UI ---
-        for t in st.session_state.mindset_report:
-            with st.expander(f"AI Baseline: Mindset {t['id']}", expanded=False):
-                ai_hash = hash(tuple(t['rows']))
-                ms_key = f"ms_items_{t['id']}_{ai_hash}"
-                th_key = f"ms_thresh_{t['id']}_{ai_hash}"
-                
-                if ms_key not in st.session_state: st.session_state[ms_key] = t['rows']
-                if th_key not in st.session_state: st.session_state[th_key] = t['threshold']
-
-                st.markdown(f"### <span style='color:{t['color']}'>Mindset {t['id']}</span>", unsafe_allow_html=True)
-                
-                selected_items = st.multiselect(
-                    "Defining Attributes (Add or Remove):", 
-                    options=all_available_labels,
-                    default=st.session_state[ms_key],
-                    key=ms_key
-                )
-                
-                if not selected_items:
-                    st.error("Please select at least one attribute.")
-                    continue
-                    
-                num_items = len(selected_items)
-                max_thresh = num_items
-                min_majority = max(1, (num_items // 2) + 1) 
-                
-                if st.session_state[th_key] > max_thresh: st.session_state[th_key] = max_thresh
-                if st.session_state[th_key] < min_majority: st.session_state[th_key] = min_majority
-                    
-                selected_thresh = st.slider(
-                    f"Threshold for M{t['id']} (Majority Rule):",
-                    min_value=min_majority,
-                    max_value=max_thresh,
-                    value=st.session_state[th_key],
-                    key=th_key
-                )
-                
-                sum_weights = sum([weight_lookup.get(item, 0) for item in selected_items])
-                est_reach_000s = calculate_clustered_reach(sum_weights, selected_thresh, num_items)
-                est_reach_pct = (est_reach_000s / st.session_state.universe_size) * 100
+                l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
+                l_sum_w = sum([weight_lookup.get(item, 0) for item in lasso_items])
+                l_est_reach = calculate_clustered_reach(l_sum_w, l_thresh, l_num_items)
+                l_pct = (l_est_reach / safe_univ_tab3) * 100
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    bar_color = '#2e7d32' if est_reach_pct <= 40 else '#c62828'
+                    bar_color = '#4527a0' if l_pct <= 40 else '#c62828'
                     st.markdown(f"""
                         <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
-                            <div style="background-color: {bar_color}; width: {min(100, est_reach_pct)}%; height: 100%; border-radius: 5px;"></div>
+                            <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
                         </div>
                         <div style="display: flex; justify-content: space-between; margin-top: 5px;">
-                            <span style="font-weight: bold; color: {bar_color}">{est_reach_pct:.1f}% Reach</span>
+                            <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Reach</span>
                             <span style="color: #666">40% Cap</span>
                         </div>
                     """, unsafe_allow_html=True)
-                    if est_reach_pct > 40:
-                        st.caption("⚠️ Audience too broad. Increase threshold.")
+                    if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold or remove statements.")
 
                 with col2:
-                    st.markdown(f"**Population:** {est_reach_000s:,.0f} (000s)")
-                    st.markdown(f"*(AI Target Size: ~{t['percent']:.1f}%)*")
+                    st.markdown(f"**Population:** {l_est_reach:,.0f} (000s)")
+                    st.markdown(f"*(Lasso Target Average: ~{(l_target_pop/safe_univ_tab3)*100:.1f}%)*")
 
-                m_code = "(" + " + ".join([f"[{r}]" for r in selected_items]) + f") >= {selected_thresh}"
-                st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{m_code}</div>', unsafe_allow_html=True)
+                l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
+                st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
