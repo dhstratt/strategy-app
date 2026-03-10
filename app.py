@@ -214,7 +214,7 @@ def process_data(uploaded_file, passive_files, passive_configs):
                         proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
                 
-                if not p_aligned.empty && proj.size > 0:
+                if not p_aligned.empty and proj.size > 0:
                     res['LayerName'] = cfg['name']; res['Visible'] = cfg['show']; res['Status'] = status_msg
                     pass_list.append(res)
                 else:
@@ -318,7 +318,6 @@ with tab1:
 
         st.divider()
         st.header("⚗️ AI Recommendations")
-        # Rule 1 satisfied: Lasso approach is primary, but algo can still recommend
         enable_clustering = st.checkbox("Show Suggested Clusters (AI Boss)", False) 
         if enable_clustering:
             num_clusters = st.slider("Suggested # of Mindsets", 2, 8, 4)
@@ -338,9 +337,7 @@ with tab1:
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
         df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source if isinstance(l, pd.DataFrame) and 'x' in l.columns]
         
-        # Add Cluster colors if requested (Rule 4: exclusivity enforced)
         if enable_clustering and HAS_SKLEARN:
-            # Consolidate all row points for clustering
             dfs_to_cluster = [df_a[['x', 'y']]]
             for l in df_p_list:
                 if not l.empty: dfs_to_cluster.append(l[['x', 'y']])
@@ -348,7 +345,6 @@ with tab1:
             
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
             df_a['Cluster'] = kmeans.predict(df_a[['x', 'y']])
-            # AI assigns columns to the closest mindset
             df_b['Cluster'] = kmeans.predict(df_b[['x', 'y']]) 
             for l in df_p_list:
                 if not l.empty: l['Cluster'] = kmeans.predict(l[['x', 'y']])
@@ -373,7 +369,6 @@ with tab1:
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
-        # Map Rendering initializations
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
         for l in df_p_list:
@@ -391,7 +386,6 @@ with tab1:
                 d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
-        # Define color palettes
         ai_colors = px.colors.qualitative.Bold
 
         if show_base_cols:
@@ -491,8 +485,6 @@ with tab1:
                                 short_lbl = truncate_label(r['Label'], label_len)
                                 fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=bc, size=10))
 
-        # --- UX Update: Plain Canvas ---
-        # Removing grids, zero lines, and tick marks for an ultra-plain canvas
         fig.update_layout(
             template="plotly_white", 
             height=800, 
@@ -500,7 +492,6 @@ with tab1:
             yaxis_scaleanchor="x", 
             dragmode='lasso',
             hoverlabel=dict(bgcolor="white", font_size=14, font_family="Nunito"),
-            # Ultra-plain canvas updates
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False), 
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
         )
@@ -609,7 +600,6 @@ with tab3:
             
             if lasso_items:
                 l_num_items = len(lasso_items)
-                # RULE 3 Guardrail: suggests count code as close to population number as possible, using majority rule
                 l_min_majority = max(1, (l_num_items // 2) + 1)
                 
                 if th_lasso_key not in st.session_state or st.session_state[th_lasso_key] < l_min_majority or st.session_state[th_lasso_key] > l_num_items:
@@ -622,10 +612,8 @@ with tab3:
                     key=th_lasso_key
                 )
                 
-                # RULE 2: use average of all statements for target sizing reference
                 l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
                 
-                # Statistical ProbBlend Model for math accuracy
                 w_array = [weight_lookup.get(item, 0) for item in lasso_items]
                 l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
                 
