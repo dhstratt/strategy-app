@@ -6,7 +6,7 @@ import plotly.express as px
 import io
 import pickle
 import re
-import math # NEW IMPORT FOR STATISTICAL MODELING
+import math 
 
 # --- SAFE IMPORT ---
 try:
@@ -40,6 +40,7 @@ st.markdown("""
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; height: 100%; display: flex; align-items: center;}
+        .calibration-box { background-color: #e3f2fd; border: 1px solid #1976d2; padding: 10px; border-radius: 5px; color: #0d47a1; font-weight: bold; margin-bottom: 15px;}
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -55,6 +56,7 @@ if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
 if 'lasso_labels' not in st.session_state: st.session_state.lasso_labels = []
 if 'map_key' not in st.session_state: st.session_state.map_key = 0 
 if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
+if 'corr_matrix' not in st.session_state: st.session_state.corr_matrix = pd.DataFrame()
 
 # --- HELPERS ---
 def normalize_strings(s_index):
@@ -111,8 +113,25 @@ def rotate_coords(df_to_rot, angle_deg):
     df_new['x'], df_new['y'] = rotated[:, 0], rotated[:, 1]
     return df_new
 
+def process_correlation_matrix(uploaded_file):
+    try:
+        uploaded_file.seek(0)
+        df_corr = pd.read_csv(uploaded_file, index_col=0) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file, index_col=0)
+        # Normalize headers and indices so they match our map statements
+        df_corr.index = normalize_strings(df_corr.index)
+        df_corr.columns = normalize_strings(df_corr.columns)
+        # Convert everything to numeric, forcing errors to NaN then 0
+        for col in df_corr.columns:
+            df_corr[col] = pd.to_numeric(df_corr[col], errors='coerce')
+        df_corr = df_corr.fillna(0)
+        st.session_state.corr_matrix = df_corr
+        return True
+    except Exception as e:
+        st.error(f"Error parsing correlation matrix: {e}")
+        return False
+
 # ==========================================
-# THE PROBABILITY MATH ENGINE
+# THE CALIBRATED PROBABILITY MATH ENGINE
 # ==========================================
 def calculate_clustered_reach(weights_list, threshold, universe_size, overlap_factor):
     if not weights_list or threshold == 0: return 0
@@ -120,16 +139,14 @@ def calculate_clustered_reach(weights_list, threshold, universe_size, overlap_fa
     N = len(weights_list)
     K = threshold
     
-    # RULE 2 & Target Size Logic: The goal size is based on average prevalence
     perfect_reach = np.mean(weights_list)
     
     avg_p = np.mean(weights_list) / universe_size
     if avg_p >= 1.0: avg_p = 0.99
-    if avg_p <= 0.0: return perfect_reach # Fallback if average weight is 0
+    if avg_p <= 0.0: return perfect_reach 
     
     indep_prob = 0
     for k in range(K, N + 1):
-        # Prevent math domain errors with extreme probabilities
         if avg_p == 0:
             term = 0 if k > 0 else 1
         elif avg_p == 1:
@@ -140,7 +157,7 @@ def calculate_clustered_reach(weights_list, threshold, universe_size, overlap_fa
     
     indep_reach = indep_prob * universe_size
     
-    # Blended model
+    # Blended model using either manual slider OR calibrated MRI Data
     estimated_reach = (overlap_factor * perfect_reach) + ((1.0 - overlap_factor) * indep_reach)
     return estimated_reach
 
@@ -248,6 +265,7 @@ with tab1:
                     st.session_state.accuracy = p_data['accuracy']
                     st.session_state.universe_size = float(p_data.get('universe_size', 258000.0))
                     st.session_state.exact_universe_found = p_data.get('exact_universe_found', False)
+                    st.session_state.corr_matrix = p_data.get('corr_matrix', pd.DataFrame())
                     st.session_state.processed_data = True
                     st.rerun()
                 except: st.error("Load failed.")
@@ -259,7 +277,8 @@ with tab1:
                     'passive_data': st.session_state.passive_data, 
                     'accuracy': st.session_state.accuracy, 
                     'universe_size': st.session_state.universe_size,
-                    'exact_universe_found': st.session_state.exact_universe_found
+                    'exact_universe_found': st.session_state.exact_universe_found,
+                    'corr_matrix': st.session_state.corr_matrix
                 }
                 buffer = io.BytesIO(); pickle.dump(proj_dict, buffer); buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
@@ -288,6 +307,15 @@ with tab1:
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
 
         if uploaded_file: process_data(uploaded_file, passive_files, passive_configs)
+
+        # NEW ADVANCED CALIBRATION SECTION
+        st.divider()
+        st.header("🔗 Advanced Calibration")
+        st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab/Correlation Matrix to calculate hyper-accurate exact overlaps instead of mathematical estimates.</span>", unsafe_allow_html=True)
+        corr_file = st.file_uploader("Upload Matrix File", type=["csv", "xlsx", "xls"], key="corr_upload")
+        if corr_file:
+            if process_correlation_matrix(corr_file):
+                st.success("✅ Matrix Calibrated Successfully.")
 
         if st.session_state.processed_data:
             st.divider()
@@ -575,7 +603,7 @@ with tab3:
         with st.container():
             st.markdown("""<div class="custom-mindset-card">
                 <h3 style="color: #4527a0; margin-top:0;">Custom Lasso Selection</h3>
-                <p>Fine-tune the traits and control the statistical probability to estimate the final MRI reach.</p>
+                <p>Fine-tune the traits and let the probability model estimate the final MRI reach.</p>
             </div>""", unsafe_allow_html=True)
             
             lasso_key = "ms_items_lasso"
@@ -585,12 +613,7 @@ with tab3:
                 st.session_state[lasso_key] = st.session_state.lasso_labels
                 st.session_state['last_lasso_drawn'] = st.session_state.lasso_labels.copy()
             
-            overlap_factor = st.slider(
-                "🧠 Overlap Assumption (Correlation)", 
-                min_value=0.0, max_value=1.0, value=0.75, step=0.05,
-                help="1.0 assumes perfect correlation (Reach = Average Weight). 0.0 assumes people answer completely independently (Binomial Probability)."
-            )
-
+            # --- NEW DATA CALIBRATION OVERRIDE ---
             lasso_items = st.multiselect(
                 "Lassoed Attributes (Add or Remove manually if needed):", 
                 options=all_available_labels,
@@ -598,6 +621,35 @@ with tab3:
                 key=lasso_key
             )
             
+            is_calibrated = False
+            computed_overlap = 0.75 # Default assumption
+            
+            if not st.session_state.corr_matrix.empty and lasso_items:
+                # Find matching normalized labels in the uploaded matrix
+                norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
+                valid_items = [i for i in norm_items if i in st.session_state.corr_matrix.index and i in st.session_state.corr_matrix.columns]
+                
+                if len(valid_items) > 1:
+                    sub_matrix = st.session_state.corr_matrix.loc[valid_items, valid_items]
+                    # Calculate the average pairwise correlation (excluding the diagonal 1.0s)
+                    mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
+                    avg_matrix_val = sub_matrix.where(mask).mean().mean()
+                    
+                    if pd.notna(avg_matrix_val):
+                        # Force it into a valid 0.0 to 1.0 probability blend multiplier
+                        computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
+                        is_calibrated = True
+
+            if is_calibrated:
+                st.markdown(f"<div class='calibration-box'>🧠 Powered by Uploaded MRI Matrix<br><span style='font-weight: normal'>The app has analyzed the background data and determined the exact average pairwise correlation of this specific count code is <b>{computed_overlap*100:.1f}%</b>.</span></div>", unsafe_allow_html=True)
+                overlap_factor = computed_overlap
+            else:
+                overlap_factor = st.slider(
+                    "🧠 Overlap Assumption (Correlation Estimator)", 
+                    min_value=0.0, max_value=1.0, value=0.75, step=0.05,
+                    help="1.0 assumes perfect correlation (Reach = Average Weight). 0.0 assumes people answer completely independently (Binomial Probability)."
+                )
+
             if lasso_items:
                 l_num_items = len(lasso_items)
                 l_min_majority = max(1, (l_num_items // 2) + 1)
@@ -613,7 +665,6 @@ with tab3:
                 )
                 
                 l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
-                
                 w_array = [weight_lookup.get(item, 0) for item in lasso_items]
                 l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
                 
