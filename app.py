@@ -345,7 +345,6 @@ with tab1:
         st.divider()
         st.header("🔄 View Settings")
         map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
-        # --- NEW HEIGHT SLIDER TO PREVENT SCROLLING ---
         map_height = st.slider("Map Height (Fit to screen)", min_value=500, max_value=1200, value=650, step=50, help="Adjust this so the entire map fits on your screen without scrolling. This keeps the Lasso tool always visible!")
 
     # --- RENDER ---
@@ -508,7 +507,7 @@ with tab1:
 
         fig.update_layout(
             template="plotly_white", 
-            height=map_height, # --- USES DYNAMIC SLIDER HEIGHT ---
+            height=map_height, 
             margin=dict(l=0, r=0, t=30, b=0),
             yaxis_scaleanchor="x", 
             dragmode='lasso',
@@ -517,14 +516,13 @@ with tab1:
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
         )
         
-        # --- FORCED TOOLBAR VISIBILITY ---
         map_event = st.plotly_chart(
             fig, 
             use_container_width=True, 
             on_select="rerun", 
             selection_mode=('lasso', 'box'), 
             key=f"main_map_{st.session_state.map_key}",
-            config={'displayModeBar': True, 'displaylogo': False} # Forces toolbar to always show
+            config={'displayModeBar': True, 'displaylogo': False}
         )
         
         lasso_labels = []
@@ -554,29 +552,91 @@ with tab1:
 
 with tab2:
     st.header("🧹 MRI Data Cleaner")
+    st.markdown("Use this tool to clean up messy MRI exports so they are perfectly formatted for the app.")
+    
+    # --- NEW MATRIX TOGGLE ---
+    cleaner_mode = st.radio("What type of data are you cleaning?", ["Base Map Data (Brands x Attributes)", "Correlation Matrix (Square Crosstab for Calibration)"])
+    
     raw_mri = st.file_uploader("Upload Raw Export", type=["csv", "xlsx", "xls"])
+    
     if raw_mri:
         try:
             df_r = pd.read_csv(raw_mri, header=None) if raw_mri.name.endswith('.csv') else pd.read_excel(raw_mri, header=None)
-            idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("Weighted (000)", regex=False).any())
-            brand_r = df_r.iloc[idx-1]; metric_r = df_r.iloc[idx]; data_r = df_r.iloc[idx+1:].copy()
-            c_idx, h = [0], ['Attitude']
-            for c in range(1, len(metric_r)):
-                if "Weighted" in str(metric_r[c]):
-                    b_str = str(brand_r[c-1])
-                    if "Universe" not in b_str and "Total" not in b_str and b_str != 'nan': c_idx.append(c); h.append(b_str)
-            df_c = data_r.iloc[:, c_idx]; df_c.columns = h
-            df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False)
             
-            if df_c['Attitude'].astype(str).str.contains('_Any Agree', na=False).any():
-                df_c = df_c[df_c['Attitude'].astype(str).str.contains('_Any Agree', na=False)]
-                df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
-                df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('"', '', regex=False)
-            
-            for c in df_c.columns[1:]: df_c[c] = pd.to_numeric(df_c[c].astype(str).str.replace(',', ''), errors='coerce')
-            df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
-            st.success("Cleaned!"); st.download_button("Download CSV", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_MRI.csv")
-        except: st.error("Format error.")
+            if cleaner_mode == "Base Map Data (Brands x Attributes)":
+                idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("Weighted \\(000\\)", regex=True).any())
+                
+                brand_row = df_r.iloc[idx-1].tolist()
+                last_val = "Unknown"
+                for i in range(len(brand_row)):
+                    val = str(brand_row[i]).strip()
+                    if val == "" or val == "nan" or val == "None": brand_row[i] = last_val
+                    else: last_val = val
+                brand_r = pd.Series(brand_row)
+                
+                metric_r = df_r.iloc[idx]
+                data_r = df_r.iloc[idx+1:].copy()
+                
+                c_idx, h = [0], ['Attitude']
+                for c in range(1, len(metric_r)):
+                    if "Weighted" in str(metric_r[c]):
+                        b_str = str(brand_r[c])
+                        if "Universe" not in b_str and "Total" not in b_str and b_str != 'nan': 
+                            c_idx.append(c); h.append(b_str)
+                
+                df_c = data_r.iloc[:, c_idx]; df_c.columns = h
+                
+                df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
+                for c in df_c.columns[1:]: 
+                    df_c[c] = pd.to_numeric(df_c[c].astype(str).str.replace(',', ''), errors='coerce')
+                df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
+                
+                st.success("✅ Base Map Data Cleaned!")
+                st.download_button("Download Cleaned Base Data", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Base_Data.csv")
+
+            else:
+                # --- NEW SQUARE MATRIX CLEANER ---
+                idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("%|Percent|Target", case=False, regex=True).any())
+                
+                statement_row = df_r.iloc[idx-1].tolist()
+                last_val = "Unknown"
+                for i in range(len(statement_row)):
+                    val = str(statement_row[i]).strip()
+                    if val == "" or val == "nan" or val == "None": statement_row[i] = last_val
+                    else: last_val = val
+                statement_r = pd.Series(statement_row)
+                
+                metric_r = df_r.iloc[idx]
+                data_r = df_r.iloc[idx+1:].copy()
+                
+                c_idx, h = [0], ['Attitude']
+                for c in range(1, len(metric_r)):
+                    val = str(metric_r[c]).lower()
+                    if "%" in val or "target" in val or "detail" in val or "row" in val or "horiz" in val or "vert" in val:
+                        s_str = str(statement_r[c])
+                        if "Universe" not in s_str and "Total" not in s_str and s_str != 'nan':
+                            c_idx.append(c); h.append(s_str)
+                
+                df_c = data_r.iloc[:, c_idx]; df_c.columns = h
+                
+                df_c['Attitude'] = df_c['Attitude'].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
+                new_cols = ['Attitude']
+                for col in df_c.columns[1:]:
+                    clean_col = str(col).replace('General Attitudes: ', '').replace('_Any Agree', '').replace('"', '').strip()
+                    new_cols.append(clean_col)
+                df_c.columns = new_cols
+                
+                for c in df_c.columns[1:]:
+                    df_c[c] = df_c[c].astype(str).str.replace(r'[%,]', '', regex=True)
+                    df_c[c] = pd.to_numeric(df_c[c], errors='coerce') / 100.0 
+                
+                df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
+                
+                st.success("✅ Correlation Matrix Cleaned and Formatted!")
+                st.download_button("Download Cleaned Matrix", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Correlation_Matrix.csv")
+
+        except Exception as e:
+            st.error(f"Format error: {e}")
 
 with tab3:
     st.header("📟 Count Code Editor")
