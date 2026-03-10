@@ -17,6 +17,18 @@ st.markdown("""
         html, body, [class*="css"] { font-family: 'Nunito', sans-serif; }
         h1, h2, h3 { font-family: 'Nunito', sans-serif; font-weight: 800; }
         .stMetric { font-family: 'Nunito', sans-serif; }
+        
+        /* Sticky Map Toolbar (Lasso Tool always visible on scroll) */
+        .modebar-container {
+            position: sticky !important;
+            top: 2rem !important;
+            z-index: 9999 !important;
+            background-color: rgba(255, 255, 255, 0.9) !important;
+            border-radius: 8px !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+            padding: 2px !important;
+        }
+        
         .mindset-card {
             padding: 20px; border-radius: 10px; border-left: 10px solid #ccc;
             background-color: #f9f9f9; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
@@ -279,8 +291,6 @@ with tab1:
         lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
         lbl_passive = st.checkbox("Passive Labels", False)
-        
-        # --- NEW UX TRUNCATION SLIDER ---
         label_len = st.slider("Label Length (Words)", min_value=1, max_value=15, value=5, help="Shorten text on the map to reduce clutter. Hover over dots to see full text.")
         
         placeholder_filters = st.container()
@@ -315,7 +325,7 @@ with tab1:
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
-        # Background trace initializations (so legends render correctly)
+        # Map Rendering
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
         for l in df_p_list:
@@ -333,9 +343,6 @@ with tab1:
                 d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
-        # --- MAP RENDERING WITH HOVER AND TRUNCATION ---
-        
-        # 1. Base Columns (Brands)
         if show_base_cols:
             res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
             fig.add_trace(go.Scatter(
@@ -344,7 +351,7 @@ with tab1:
                 marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
                 text=df_b['Label'], 
                 customdata=df_b['Label'], 
-                hovertemplate="<b>%{customdata}</b><extra></extra>", # Shows full text on hover
+                hovertemplate="<b>%{customdata}</b><extra></extra>",
                 showlegend=False
             ))
             if lbl_cols:
@@ -353,7 +360,6 @@ with tab1:
                     short_lbl = truncate_label(r['Label'], label_len)
                     fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
 
-        # 2. Base Rows (Statements)
         if show_base_rows:
             res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
             fig.add_trace(go.Scatter(
@@ -362,7 +368,7 @@ with tab1:
                 marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
                 text=df_a['Label'], 
                 customdata=df_a['Label'], 
-                hovertemplate="<b>%{customdata}</b><extra></extra>", # Shows full text on hover
+                hovertemplate="<b>%{customdata}</b><extra></extra>",
                 showlegend=False
             ))
             if lbl_rows:
@@ -372,7 +378,6 @@ with tab1:
                         short_lbl = truncate_label(r['Label'], label_len)
                         fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
 
-        # 3. Passive Layers (Demographics/Custom)
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
                 l_shape = layer['Shape'].iloc[0] 
@@ -383,7 +388,7 @@ with tab1:
                     marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
                     text=layer['Label'], 
                     customdata=layer['Label'], 
-                    hovertemplate="<b>%{customdata}</b><extra></extra>", # Shows full text on hover
+                    hovertemplate="<b>%{customdata}</b><extra></extra>",
                     showlegend=False
                 ))
                 if lbl_passive:
@@ -393,7 +398,14 @@ with tab1:
                             short_lbl = truncate_label(r['Label'], label_len)
                             fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
 
-        fig.update_layout(template="plotly_white", height=850, yaxis_scaleanchor="x", dragmode='lasso')
+        # SIGNIFICANTLY LARGER MAP & REMOVED MARGINS TO MAXIMIZE CANVAS
+        fig.update_layout(
+            template="plotly_white", 
+            height=1100, 
+            margin=dict(l=10, r=10, t=30, b=10),
+            yaxis_scaleanchor="x", 
+            dragmode='lasso'
+        )
         
         # --- PLOTLY SELECTION EVENT HANDLER ---
         map_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode=('lasso', 'box'), key="main_map")
