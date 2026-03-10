@@ -18,17 +18,6 @@ st.markdown("""
         h1, h2, h3 { font-family: 'Nunito', sans-serif; font-weight: 800; }
         .stMetric { font-family: 'Nunito', sans-serif; }
         
-        /* Sticky Map Toolbar (Lasso Tool always visible on scroll) */
-        .modebar-container {
-            position: sticky !important;
-            top: 2rem !important;
-            z-index: 9999 !important;
-            background-color: rgba(255, 255, 255, 0.9) !important;
-            border-radius: 8px !important;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
-            padding: 2px !important;
-        }
-        
         .mindset-card {
             padding: 20px; border-radius: 10px; border-left: 10px solid #ccc;
             background-color: #f9f9f9; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
@@ -62,7 +51,6 @@ def normalize_strings(s_index):
     return s_index.astype(str).str.lower().str.replace(r'[^\w\s]', '', regex=True).str.strip()
 
 def truncate_label(text, max_words):
-    """Truncates long text labels to a specified number of words for cleaner mapping."""
     words = str(text).split()
     if len(words) > max_words:
         return " ".join(words[:max_words]) + "..."
@@ -72,7 +60,6 @@ def clean_df(df_input, is_core=False):
     df = df_input.copy()
     label_col = df.columns[0]
     
-    # Auto-clean "_Any Agree"
     if df[label_col].astype(str).str.contains('_Any Agree', na=False).any():
         df = df[df[label_col].astype(str).str.contains('_Any Agree', na=False)]
         df[label_col] = df[label_col].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
@@ -80,7 +67,6 @@ def clean_df(df_input, is_core=False):
     
     df = df.set_index(label_col)
     
-    # Clean numeric data
     for col in df.columns:
         if df[col].dtype == 'object':
             df[col] = df[col].astype(str).str.replace(r'[,$%]', '', regex=True)
@@ -88,7 +74,6 @@ def clean_df(df_input, is_core=False):
             df[col] = pd.to_numeric(df[col], errors='coerce')
     df = df.fillna(0)
     
-    # Check for Study Universe
     if is_core:
         u_idx = df.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
         if any(u_idx):
@@ -100,9 +85,8 @@ def clean_df(df_input, is_core=False):
                 st.session_state.exact_universe_found = False
         else:
             st.session_state.exact_universe_found = False
-            st.session_state.universe_size = 258000.0 # Default US Adult estimate
+            st.session_state.universe_size = 258000.0
     
-    # Drop Total columns/rows for the map math
     mask = ~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)
     valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
     return df.loc[mask, valid_cols]
@@ -325,7 +309,6 @@ with tab1:
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
-        # Map Rendering
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
         for l in df_p_list:
@@ -348,7 +331,7 @@ with tab1:
             fig.add_trace(go.Scatter(
                 x=df_b['x'], y=df_b['y'], 
                 mode='markers', 
-                marker=dict(size=12, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                marker=dict(size=14, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
                 text=df_b['Label'], 
                 customdata=df_b['Label'], 
                 hovertemplate="<b>%{customdata}</b><extra></extra>",
@@ -358,14 +341,14 @@ with tab1:
                 for _, r in df_b.iterrows():
                     color, opac = get_so(r['Label'], '#1f77b4')
                     short_lbl = truncate_label(r['Label'], label_len)
-                    fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-20, font=dict(color=color, size=12))
+                    fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=color, size=12))
 
         if show_base_rows:
             res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
             fig.add_trace(go.Scatter(
                 x=df_a['x'], y=df_a['y'], 
                 mode='markers', 
-                marker=dict(size=8, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                marker=dict(size=10, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
                 text=df_a['Label'], 
                 customdata=df_a['Label'], 
                 hovertemplate="<b>%{customdata}</b><extra></extra>",
@@ -376,7 +359,7 @@ with tab1:
                     color, opac = get_so(r['Label'], '#d62728')
                     if opac > 0.3: 
                         short_lbl = truncate_label(r['Label'], label_len)
-                        fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=11))
+                        fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=8, font=dict(color=color, size=11))
 
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
@@ -385,7 +368,7 @@ with tab1:
                 fig.add_trace(go.Scatter(
                     x=layer['x'], y=layer['y'], 
                     mode='markers', 
-                    marker=dict(size=10, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                    marker=dict(size=12, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
                     text=layer['Label'], 
                     customdata=layer['Label'], 
                     hovertemplate="<b>%{customdata}</b><extra></extra>",
@@ -396,25 +379,23 @@ with tab1:
                         color, opac = get_so(r['Label'], '#555')
                         if opac > 0.3: 
                             short_lbl = truncate_label(r['Label'], label_len)
-                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=True, arrowhead=0, arrowcolor=color, ax=0, ay=-15, font=dict(color=color, size=10))
+                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=color, size=10))
 
-        # SIGNIFICANTLY LARGER MAP & REMOVED MARGINS TO MAXIMIZE CANVAS
+        # REDUCED HEIGHT TO KEEP TOOLBAR ON SCREEN
         fig.update_layout(
             template="plotly_white", 
-            height=1100, 
-            margin=dict(l=10, r=10, t=30, b=10),
+            height=800, 
+            margin=dict(l=0, r=0, t=30, b=0),
             yaxis_scaleanchor="x", 
-            dragmode='lasso'
+            dragmode='lasso',
+            hoverlabel=dict(bgcolor="white", font_size=14, font_family="Nunito")
         )
         
-        # --- PLOTLY SELECTION EVENT HANDLER ---
         map_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode=('lasso', 'box'), key="main_map")
         
-        # Capture Lassoed Points and Filter out Brands
         lasso_labels = []
         if map_event and hasattr(map_event, 'selection') and map_event.selection.get("points"):
             for pt in map_event.selection["points"]:
-                # Grabs the FULL customdata label string so count codes remain accurate
                 if "customdata" in pt: lasso_labels.append(pt["customdata"])
                 elif "text" in pt: lasso_labels.append(pt["text"])
             
@@ -471,7 +452,6 @@ with tab3:
                 weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
         all_available_labels = sorted(list(weight_lookup.keys()))
 
-        # --- CUSTOM LASSO MINDSET UI ---
         with st.container():
             st.markdown("""<div class="custom-mindset-card">
                 <h3 style="color: #4527a0; margin-top:0;">Custom Lasso Selection</h3>
