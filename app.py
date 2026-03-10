@@ -117,10 +117,8 @@ def process_correlation_matrix(uploaded_file):
     try:
         uploaded_file.seek(0)
         df_corr = pd.read_csv(uploaded_file, index_col=0) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file, index_col=0)
-        # Normalize headers and indices so they match our map statements
         df_corr.index = normalize_strings(df_corr.index)
         df_corr.columns = normalize_strings(df_corr.columns)
-        # Convert everything to numeric, forcing errors to NaN then 0
         for col in df_corr.columns:
             df_corr[col] = pd.to_numeric(df_corr[col], errors='coerce')
         df_corr = df_corr.fillna(0)
@@ -130,15 +128,11 @@ def process_correlation_matrix(uploaded_file):
         st.error(f"Error parsing correlation matrix: {e}")
         return False
 
-# ==========================================
-# THE CALIBRATED PROBABILITY MATH ENGINE
-# ==========================================
 def calculate_clustered_reach(weights_list, threshold, universe_size, overlap_factor):
     if not weights_list or threshold == 0: return 0
     
     N = len(weights_list)
     K = threshold
-    
     perfect_reach = np.mean(weights_list)
     
     avg_p = np.mean(weights_list) / universe_size
@@ -156,8 +150,6 @@ def calculate_clustered_reach(weights_list, threshold, universe_size, overlap_fa
         indep_prob += term
     
     indep_reach = indep_prob * universe_size
-    
-    # Blended model using either manual slider OR calibrated MRI Data
     estimated_reach = (overlap_factor * perfect_reach) + ((1.0 - overlap_factor) * indep_reach)
     return estimated_reach
 
@@ -308,7 +300,6 @@ with tab1:
 
         if uploaded_file: process_data(uploaded_file, passive_files, passive_configs)
 
-        # NEW ADVANCED CALIBRATION SECTION
         st.divider()
         st.header("🔗 Advanced Calibration")
         st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab/Correlation Matrix to calculate hyper-accurate exact overlaps instead of mathematical estimates.</span>", unsafe_allow_html=True)
@@ -354,6 +345,8 @@ with tab1:
         st.divider()
         st.header("🔄 View Settings")
         map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
+        # --- NEW HEIGHT SLIDER TO PREVENT SCROLLING ---
+        map_height = st.slider("Map Height (Fit to screen)", min_value=500, max_value=1200, value=650, step=50, help="Adjust this so the entire map fits on your screen without scrolling. This keeps the Lasso tool always visible!")
 
     # --- RENDER ---
     if st.session_state.processed_data:
@@ -515,7 +508,7 @@ with tab1:
 
         fig.update_layout(
             template="plotly_white", 
-            height=800, 
+            height=map_height, # --- USES DYNAMIC SLIDER HEIGHT ---
             margin=dict(l=0, r=0, t=30, b=0),
             yaxis_scaleanchor="x", 
             dragmode='lasso',
@@ -524,12 +517,14 @@ with tab1:
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
         )
         
+        # --- FORCED TOOLBAR VISIBILITY ---
         map_event = st.plotly_chart(
             fig, 
             use_container_width=True, 
             on_select="rerun", 
             selection_mode=('lasso', 'box'), 
-            key=f"main_map_{st.session_state.map_key}"
+            key=f"main_map_{st.session_state.map_key}",
+            config={'displayModeBar': True, 'displaylogo': False} # Forces toolbar to always show
         )
         
         lasso_labels = []
@@ -613,7 +608,6 @@ with tab3:
                 st.session_state[lasso_key] = st.session_state.lasso_labels
                 st.session_state['last_lasso_drawn'] = st.session_state.lasso_labels.copy()
             
-            # --- NEW DATA CALIBRATION OVERRIDE ---
             lasso_items = st.multiselect(
                 "Lassoed Attributes (Add or Remove manually if needed):", 
                 options=all_available_labels,
@@ -622,21 +616,18 @@ with tab3:
             )
             
             is_calibrated = False
-            computed_overlap = 0.75 # Default assumption
+            computed_overlap = 0.75 
             
             if not st.session_state.corr_matrix.empty and lasso_items:
-                # Find matching normalized labels in the uploaded matrix
                 norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
                 valid_items = [i for i in norm_items if i in st.session_state.corr_matrix.index and i in st.session_state.corr_matrix.columns]
                 
                 if len(valid_items) > 1:
                     sub_matrix = st.session_state.corr_matrix.loc[valid_items, valid_items]
-                    # Calculate the average pairwise correlation (excluding the diagonal 1.0s)
                     mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
                     avg_matrix_val = sub_matrix.where(mask).mean().mean()
                     
                     if pd.notna(avg_matrix_val):
-                        # Force it into a valid 0.0 to 1.0 probability blend multiplier
                         computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
                         is_calibrated = True
 
