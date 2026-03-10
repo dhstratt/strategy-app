@@ -6,6 +6,14 @@ import plotly.express as px
 import io
 import pickle
 import re
+import math # NEW IMPORT FOR STATISTICAL MODELING
+
+# --- SAFE IMPORT ---
+try:
+    from sklearn.cluster import KMeans
+    HAS_SKLEARN = True
+except ImportError:
+    HAS_SKLEARN = False
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="The Consumer Landscape")
@@ -31,7 +39,7 @@ st.markdown("""
         .size-badge-custom { float: right; background: #4527a0; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
-        .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; }
+        .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; height: 100%; display: flex; align-items: center;}
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -45,6 +53,8 @@ if 'df_brands' not in st.session_state: st.session_state.df_brands = pd.DataFram
 if 'df_attrs' not in st.session_state: st.session_state.df_attrs = pd.DataFrame()
 if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
 if 'lasso_labels' not in st.session_state: st.session_state.lasso_labels = []
+if 'map_key' not in st.session_state: st.session_state.map_key = 0 
+if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
 
 # --- HELPERS ---
 def normalize_strings(s_index):
@@ -101,11 +111,38 @@ def rotate_coords(df_to_rot, angle_deg):
     df_new['x'], df_new['y'] = rotated[:, 0], rotated[:, 1]
     return df_new
 
-def calculate_clustered_reach(sum_weights, threshold, num_items):
-    if threshold == 0: return 0
-    overlap_factor = 0.7 
-    divisor = threshold + (num_items - threshold) * overlap_factor
-    return sum_weights / divisor
+# ==========================================
+# THE PROBABILITY MATH ENGINE
+# ==========================================
+def calculate_clustered_reach(weights_list, threshold, universe_size, overlap_factor):
+    if not weights_list or threshold == 0: return 0
+    
+    N = len(weights_list)
+    K = threshold
+    
+    # RULE 2 & Target Size Logic: The goal size is based on average prevalence
+    perfect_reach = np.mean(weights_list)
+    
+    avg_p = np.mean(weights_list) / universe_size
+    if avg_p >= 1.0: avg_p = 0.99
+    if avg_p <= 0.0: return perfect_reach # Fallback if average weight is 0
+    
+    indep_prob = 0
+    for k in range(K, N + 1):
+        # Prevent math domain errors with extreme probabilities
+        if avg_p == 0:
+            term = 0 if k > 0 else 1
+        elif avg_p == 1:
+            term = 1 if k == N else 0
+        else:
+            term = math.comb(N, k) * (avg_p**k) * ((1 - avg_p)**(N - k))
+        indep_prob += term
+    
+    indep_reach = indep_prob * universe_size
+    
+    # Blended model
+    estimated_reach = (overlap_factor * perfect_reach) + ((1.0 - overlap_factor) * indep_reach)
+    return estimated_reach
 
 def get_safe_universe():
     return st.session_state.universe_size if st.session_state.universe_size > 0 else 258000.0
@@ -177,7 +214,7 @@ def process_data(uploaded_file, passive_files, passive_configs):
                         proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
                 
-                if not p_aligned.empty and proj.size > 0:
+                if not p_aligned.empty && proj.size > 0:
                     res['LayerName'] = cfg['name']; res['Visible'] = cfg['show']; res['Status'] = status_msg
                     pass_list.append(res)
                 else:
@@ -280,6 +317,14 @@ with tab1:
         placeholder_filters = st.container()
 
         st.divider()
+        st.header("⚗️ AI Recommendations")
+        # Rule 1 satisfied: Lasso approach is primary, but algo can still recommend
+        enable_clustering = st.checkbox("Show Suggested Clusters (AI Boss)", False) 
+        if enable_clustering:
+            num_clusters = st.slider("Suggested # of Mindsets", 2, 8, 4)
+            strictness = st.slider("🎯 AI Cluster Tightness", 0, 100, 30)
+
+        st.divider()
         st.header("🔄 View Settings")
         map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
 
@@ -292,6 +337,25 @@ with tab1:
         df_a = rotate_coords(st.session_state.df_attrs.copy(), map_rotation)
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
         df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source if isinstance(l, pd.DataFrame) and 'x' in l.columns]
+        
+        # Add Cluster colors if requested (Rule 4: exclusivity enforced)
+        if enable_clustering and HAS_SKLEARN:
+            # Consolidate all row points for clustering
+            dfs_to_cluster = [df_a[['x', 'y']]]
+            for l in df_p_list:
+                if not l.empty: dfs_to_cluster.append(l[['x', 'y']])
+            pool = pd.concat(dfs_to_cluster)
+            
+            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
+            df_a['Cluster'] = kmeans.predict(df_a[['x', 'y']])
+            # AI assigns columns to the closest mindset
+            df_b['Cluster'] = kmeans.predict(df_b[['x', 'y']]) 
+            for l in df_p_list:
+                if not l.empty: l['Cluster'] = kmeans.predict(l[['x', 'y']])
+        else:
+            df_a['Cluster'] = 0; df_b['Cluster'] = 0
+            for l in df_p_list:
+                if not l.empty: l['Cluster'] = 0
 
         with placeholder_filters:
             with st.expander("🔍 Filter Base Map", expanded=False):
@@ -309,6 +373,7 @@ with tab1:
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
+        # Map Rendering initializations
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
         for l in df_p_list:
@@ -326,72 +391,127 @@ with tab1:
                 d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
+        # Define color palettes
+        ai_colors = px.colors.qualitative.Bold
+
         if show_base_cols:
-            res = [get_so(r['Label'], '#1f77b4') for _,r in df_b.iterrows()]
-            fig.add_trace(go.Scatter(
-                x=df_b['x'], y=df_b['y'], 
-                mode='markers', 
-                marker=dict(size=14, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
-                text=df_b['Label'], 
-                customdata=df_b['Label'], 
-                hovertemplate="<b>%{customdata}</b><extra></extra>",
-                showlegend=False
-            ))
-            if lbl_cols:
-                for _, r in df_b.iterrows():
-                    color, opac = get_so(r['Label'], '#1f77b4')
-                    short_lbl = truncate_label(r['Label'], label_len)
-                    fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=color, size=12))
+            if enable_clustering:
+                for cid in sorted(df_b['Cluster'].unique()):
+                    sub = df_b[df_b['Cluster'] == cid]
+                    bc = ai_colors[cid % 10]
+                    res = [get_so(r['Label'], bc) for _,r in sub.iterrows()]
+                    fig.add_trace(go.Scatter(
+                        x=sub['x'], y=sub['y'], 
+                        mode='markers', 
+                        marker=dict(size=14, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                        text=sub['Label'], customdata=sub['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
+                    ))
+                    if lbl_cols:
+                        for _, r in sub.iterrows():
+                            color, opac = get_so(r['Label'], bc)
+                            short_lbl = truncate_label(r['Label'], label_len)
+                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=bc, size=12))
+            else:
+                bc = '#1f77b4'
+                res = [get_so(r['Label'], bc) for _,r in df_b.iterrows()]
+                fig.add_trace(go.Scatter(
+                    x=df_b['x'], y=df_b['y'], mode='markers', 
+                    marker=dict(size=14, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                    text=df_b['Label'], customdata=df_b['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
+                ))
+                if lbl_cols:
+                    for _, r in df_b.iterrows():
+                        color, opac = get_so(r['Label'], bc)
+                        short_lbl = truncate_label(r['Label'], label_len)
+                        fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=bc, size=12))
 
         if show_base_rows:
-            res = [get_so(r['Label'], '#d62728') for _,r in df_a.iterrows()]
-            fig.add_trace(go.Scatter(
-                x=df_a['x'], y=df_a['y'], 
-                mode='markers', 
-                marker=dict(size=10, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
-                text=df_a['Label'], 
-                customdata=df_a['Label'], 
-                hovertemplate="<b>%{customdata}</b><extra></extra>",
-                showlegend=False
-            ))
-            if lbl_rows:
-                for _, r in df_a.iterrows():
-                    color, opac = get_so(r['Label'], '#d62728')
-                    if opac > 0.3: 
-                        short_lbl = truncate_label(r['Label'], label_len)
-                        fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=8, font=dict(color=color, size=11))
+            if enable_clustering:
+                for cid in sorted(df_a['Cluster'].unique()):
+                    sub = df_a[df_a['Cluster'] == cid]
+                    bc = ai_colors[cid % 10]
+                    res = [get_so(r['Label'], bc) for _,r in sub.iterrows()]
+                    fig.add_trace(go.Scatter(
+                        x=sub['x'], y=sub['y'], mode='markers', 
+                        marker=dict(size=10, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                        text=sub['Label'], customdata=sub['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
+                    ))
+                    if lbl_rows:
+                        for _, r in sub.iterrows():
+                            color, opac = get_so(r['Label'], bc)
+                            if opac > 0.3: 
+                                short_lbl = truncate_label(r['Label'], label_len)
+                                fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=8, font=dict(color=bc, size=11))
+            else:
+                bc = '#d62728'
+                res = [get_so(r['Label'], bc) for _,r in df_a.iterrows()]
+                fig.add_trace(go.Scatter(
+                    x=df_a['x'], y=df_a['y'], mode='markers', 
+                    marker=dict(size=10, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                    text=df_a['Label'], customdata=df_a['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
+                ))
+                if lbl_rows:
+                    for _, r in df_a.iterrows():
+                        color, opac = get_so(r['Label'], bc)
+                        if opac > 0.3: 
+                            short_lbl = truncate_label(r['Label'], label_len)
+                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=8, font=dict(color=bc, size=11))
 
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
                 l_shape = layer['Shape'].iloc[0] 
-                res = [get_so(r['Label'], '#555') for _,r in layer.iterrows()]
-                fig.add_trace(go.Scatter(
-                    x=layer['x'], y=layer['y'], 
-                    mode='markers', 
-                    marker=dict(size=12, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
-                    text=layer['Label'], 
-                    customdata=layer['Label'], 
-                    hovertemplate="<b>%{customdata}</b><extra></extra>",
-                    showlegend=False
-                ))
-                if lbl_passive:
-                    for _, r in layer.iterrows():
-                        color, opac = get_so(r['Label'], '#555')
-                        if opac > 0.3: 
-                            short_lbl = truncate_label(r['Label'], label_len)
-                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=color, size=10))
+                if enable_clustering:
+                    for cid in sorted(layer['Cluster'].unique()):
+                        sub = layer[layer['Cluster'] == cid]
+                        bc = ai_colors[cid % 10]
+                        res = [get_so(r['Label'], bc) for _,r in sub.iterrows()]
+                        fig.add_trace(go.Scatter(
+                            x=sub['x'], y=sub['y'], mode='markers', 
+                            marker=dict(size=12, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                            text=layer['Label'], customdata=layer['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
+                        ))
+                        if lbl_passive:
+                            for _, r in layer.iterrows():
+                                color, opac = get_so(r['Label'], bc)
+                                if opac > 0.3: 
+                                    short_lbl = truncate_label(r['Label'], label_len)
+                                    fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=bc, size=10))
+                else:
+                    bc = '#555'
+                    res = [get_so(r['Label'], bc) for _,r in layer.iterrows()]
+                    fig.add_trace(go.Scatter(
+                        x=layer['x'], y=layer['y'], mode='markers', 
+                        marker=dict(size=12, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                        text=layer['Label'], customdata=layer['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
+                    ))
+                    if lbl_passive:
+                        for _, r in layer.iterrows():
+                            color, opac = get_so(r['Label'], bc)
+                            if opac > 0.3: 
+                                short_lbl = truncate_label(r['Label'], label_len)
+                                fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=bc, size=10))
 
-        # REDUCED HEIGHT TO KEEP TOOLBAR ON SCREEN
+        # --- UX Update: Plain Canvas ---
+        # Removing grids, zero lines, and tick marks for an ultra-plain canvas
         fig.update_layout(
             template="plotly_white", 
             height=800, 
             margin=dict(l=0, r=0, t=30, b=0),
             yaxis_scaleanchor="x", 
             dragmode='lasso',
-            hoverlabel=dict(bgcolor="white", font_size=14, font_family="Nunito")
+            hoverlabel=dict(bgcolor="white", font_size=14, font_family="Nunito"),
+            # Ultra-plain canvas updates
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False), 
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
         )
         
-        map_event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode=('lasso', 'box'), key="main_map")
+        map_event = st.plotly_chart(
+            fig, 
+            use_container_width=True, 
+            on_select="rerun", 
+            selection_mode=('lasso', 'box'), 
+            key=f"main_map_{st.session_state.map_key}"
+        )
         
         lasso_labels = []
         if map_event and hasattr(map_event, 'selection') and map_event.selection.get("points"):
@@ -407,7 +527,16 @@ with tab1:
             st.session_state.lasso_labels = []
 
         if st.session_state.lasso_labels:
-            st.markdown(f'<div class="success-box">✅ You lassooed {len(st.session_state.lasso_labels)} psychographic statements! Go to the Count Code Editor tab to finalize your Custom Mindset.</div>', unsafe_allow_html=True)
+            col_msg, col_btn = st.columns([4, 1])
+            with col_msg:
+                st.markdown(f'<div class="success-box">✅ You lassooed {len(st.session_state.lasso_labels)} statements! Edit them in the Count Code Editor tab. (Double-click the map background to clear natively).</div>', unsafe_allow_html=True)
+            with col_btn:
+                if st.button("🗑️ Clear Selection", use_container_width=True, help="Click here to remove your drawing from the map and start over."):
+                    st.session_state.lasso_labels = []
+                    st.session_state.map_key += 1
+                    if "ms_items_lasso" in st.session_state: del st.session_state["ms_items_lasso"]
+                    if "ms_thresh_lasso" in st.session_state: del st.session_state["ms_thresh_lasso"]
+                    st.rerun()
 
 with tab2:
     st.header("🧹 MRI Data Cleaner")
@@ -455,7 +584,7 @@ with tab3:
         with st.container():
             st.markdown("""<div class="custom-mindset-card">
                 <h3 style="color: #4527a0; margin-top:0;">Custom Lasso Selection</h3>
-                <p>This count code is generated from the statements you drew a box around on the map.</p>
+                <p>Fine-tune the traits and control the statistical probability to estimate the final MRI reach.</p>
             </div>""", unsafe_allow_html=True)
             
             lasso_key = "ms_items_lasso"
@@ -465,6 +594,12 @@ with tab3:
                 st.session_state[lasso_key] = st.session_state.lasso_labels
                 st.session_state['last_lasso_drawn'] = st.session_state.lasso_labels.copy()
             
+            overlap_factor = st.slider(
+                "🧠 Overlap Assumption (Correlation)", 
+                min_value=0.0, max_value=1.0, value=0.75, step=0.05,
+                help="1.0 assumes perfect correlation (Reach = Average Weight). 0.0 assumes people answer completely independently (Binomial Probability)."
+            )
+
             lasso_items = st.multiselect(
                 "Lassoed Attributes (Add or Remove manually if needed):", 
                 options=all_available_labels,
@@ -474,6 +609,7 @@ with tab3:
             
             if lasso_items:
                 l_num_items = len(lasso_items)
+                # RULE 3 Guardrail: suggests count code as close to population number as possible, using majority rule
                 l_min_majority = max(1, (l_num_items // 2) + 1)
                 
                 if th_lasso_key not in st.session_state or st.session_state[th_lasso_key] < l_min_majority or st.session_state[th_lasso_key] > l_num_items:
@@ -486,9 +622,13 @@ with tab3:
                     key=th_lasso_key
                 )
                 
+                # RULE 2: use average of all statements for target sizing reference
                 l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
-                l_sum_w = sum([weight_lookup.get(item, 0) for item in lasso_items])
-                l_est_reach = calculate_clustered_reach(l_sum_w, l_thresh, l_num_items)
+                
+                # Statistical ProbBlend Model for math accuracy
+                w_array = [weight_lookup.get(item, 0) for item in lasso_items]
+                l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
+                
                 l_pct = (l_est_reach / safe_univ_tab3) * 100
                 
                 col1, col2 = st.columns(2)
@@ -506,8 +646,8 @@ with tab3:
                     if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold or remove statements.")
 
                 with col2:
-                    st.markdown(f"**Population:** {l_est_reach:,.0f} (000s)")
-                    st.markdown(f"*(Lasso Target Average: ~{(l_target_pop/safe_univ_tab3)*100:.1f}%)*")
+                    st.markdown(f"**Population Estimate:** {l_est_reach:,.0f} (000s)")
+                    st.markdown(f"*(Lasso Target Average Reference: ~{(l_target_pop/safe_univ_tab3)*100:.1f}%)*")
 
                 l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
                 st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
