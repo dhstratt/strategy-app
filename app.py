@@ -58,7 +58,7 @@ if 'lasso_labels' not in st.session_state: st.session_state.lasso_labels = []
 if 'map_key' not in st.session_state: st.session_state.map_key = 0 
 if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
 if 'corr_matrix' not in st.session_state: st.session_state.corr_matrix = pd.DataFrame()
-if 'saved_mindsets' not in st.session_state: st.session_state.saved_mindsets = [] # NEW DECK STATE
+if 'saved_mindsets' not in st.session_state: st.session_state.saved_mindsets = []
 
 # --- HELPERS ---
 def normalize_strings(s_index):
@@ -262,7 +262,7 @@ with tab1:
                     st.session_state.universe_size = float(p_data.get('universe_size', 258000.0))
                     st.session_state.exact_universe_found = p_data.get('exact_universe_found', False)
                     st.session_state.corr_matrix = p_data.get('corr_matrix', pd.DataFrame())
-                    st.session_state.saved_mindsets = p_data.get('saved_mindsets', []) # Loads deck
+                    st.session_state.saved_mindsets = p_data.get('saved_mindsets', []) 
                     st.session_state.processed_data = True
                     st.rerun()
                 except: st.error("Load failed.")
@@ -276,7 +276,7 @@ with tab1:
                     'universe_size': st.session_state.universe_size,
                     'exact_universe_found': st.session_state.exact_universe_found,
                     'corr_matrix': st.session_state.corr_matrix,
-                    'saved_mindsets': st.session_state.saved_mindsets # Saves deck
+                    'saved_mindsets': st.session_state.saved_mindsets 
                 }
                 buffer = io.BytesIO(); pickle.dump(proj_dict, buffer); buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
@@ -351,7 +351,7 @@ with tab1:
         st.divider()
         st.header("🔄 View Settings")
         map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
-        map_height = st.slider("Map Height (Fit to screen)", min_value=500, max_value=1200, value=650, step=50, help="Adjust this so the entire map fits on your screen without scrolling. This keeps the Lasso tool always visible!")
+        map_height = st.slider("Map Height (Fit to screen)", min_value=500, max_value=1200, value=650, step=50, help="Adjust this so the entire map fits on your screen without scrolling. This keeps the Box tool always visible!")
 
     # --- RENDER ---
     if st.session_state.processed_data:
@@ -511,19 +511,19 @@ with tab1:
                                 short_lbl = truncate_label(r['Label'], label_len)
                                 fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=bc, size=10))
 
-        # --- DEFAULT PAN & SCROLL ZOOM SETTINGS ---
+        # --- DRAGMODE='PAN' AS DEFAULT ---
         fig.update_layout(
             template="plotly_white", 
             height=map_height, 
             margin=dict(l=0, r=0, t=30, b=0),
             yaxis_scaleanchor="x", 
-            dragmode='pan', # Set default interaction to Pan/Move
+            dragmode='pan', 
             hoverlabel=dict(bgcolor="white", font_size=14, font_family="Nunito"),
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False), 
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
         )
         
-        # Activate the scroll zoom and constant toolbar
+        # --- SCROLL ZOOM AND PERSISTENT TOOLBAR ACTIVATED ---
         map_event = st.plotly_chart(
             fig, 
             use_container_width=True, 
@@ -553,9 +553,9 @@ with tab1:
         if st.session_state.lasso_labels:
             col_msg, col_btn = st.columns([4, 1])
             with col_msg:
-                st.markdown(f'<div class="success-box">✅ You grabbed {len(st.session_state.lasso_labels)} statements! Edit them in the Count Code Editor tab.</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="success-box">✅ You bubbled {len(st.session_state.lasso_labels)} statements! Edit them in the Count Code Editor tab. (Select the "Pan" hand tool to move the map without losing your shape).</div>', unsafe_allow_html=True)
             with col_btn:
-                if st.button("🗑️ Clear Map Selection", use_container_width=True, help="Remove your bubble/lasso from the map."):
+                if st.button("🗑️ Clear Bubble/Selection", use_container_width=True, help="Click here to remove your shape from the map."):
                     st.session_state.lasso_labels = []
                     st.session_state.map_key += 1
                     if "ms_items_lasso" in st.session_state: del st.session_state["ms_items_lasso"]
@@ -566,7 +566,15 @@ with tab2:
     st.header("🧹 MRI Data Cleaner")
     st.markdown("Use this tool to clean up messy MRI exports so they are perfectly formatted for the app.")
     
-    cleaner_mode = st.radio("What type of data are you cleaning?", ["Base Map Data (Brands x Attributes)", "Correlation Matrix (Square Crosstab for Calibration)"])
+    # --- NEW OPTION ADDED FOR PASSIVE LAYERS ---
+    cleaner_mode = st.radio(
+        "What type of data are you cleaning?", 
+        [
+            "Base Map Data (Brands x Attributes)", 
+            "Passive Layer Data (Brands x Demographics/Media)",
+            "Correlation Matrix (Square Crosstab for Calibration)"
+        ]
+    )
     
     raw_mri = st.file_uploader("Upload Raw Export", type=["csv", "xlsx", "xls"])
     
@@ -574,7 +582,7 @@ with tab2:
         try:
             df_r = pd.read_csv(raw_mri, header=None) if raw_mri.name.endswith('.csv') else pd.read_excel(raw_mri, header=None)
             
-            if cleaner_mode == "Base Map Data (Brands x Attributes)":
+            if cleaner_mode == "Base Map Data (Brands x Attributes)" or cleaner_mode == "Passive Layer Data (Brands x Demographics/Media)":
                 idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("Weighted \\(000\\)", regex=True).any())
                 
                 brand_row = df_r.iloc[idx-1].tolist()
@@ -605,8 +613,13 @@ with tab2:
                 df_c = df_c.loc[:, ~df_c.columns.duplicated()]
                 df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
                 
-                st.success("✅ Base Map Data Cleaned!")
-                st.download_button("Download Cleaned Base Data", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Base_Data.csv")
+                if cleaner_mode == "Base Map Data (Brands x Attributes)":
+                    st.success("✅ Base Map Data Cleaned!")
+                    st.download_button("Download Cleaned Base Data", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Base_Data.csv")
+                else:
+                    # --- NEW DOWNLOAD FOR PASSIVES ---
+                    st.success("✅ Passive Layer Data Cleaned!")
+                    st.download_button("Download Cleaned Passive Layer", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Passive_Layer.csv")
 
             else:
                 idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("%|Percent|Target", case=False, regex=True).any())
@@ -659,7 +672,6 @@ with tab3:
     if st.session_state.processed_data and not st.session_state.exact_universe_found:
         st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s) to calculate reach percentages.")
 
-    # --- 1. ACTIVE EDITOR (Only shows if there is a shape drawn on the map) ---
     if st.session_state.lasso_labels:
         safe_univ_tab3 = get_safe_universe()
         weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
@@ -765,7 +777,6 @@ with tab3:
                     l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
                     st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
                     
-                    # --- NEW: SAVE TO DECK FEATURE ---
                     st.markdown("---")
                     st.markdown("### 💾 Add to Mindset Deck")
                     col_name, col_save = st.columns([3, 1])
@@ -787,9 +798,8 @@ with tab3:
                             st.rerun()
 
     else:
-        st.info("👈 Use the Box/Lasso tool on the map to draw a bubble around points to build a new mindset.")
+        st.info("👈 Open the Map toolbar, select the 'Box Select' (bubble) icon, and draw around points to build a new mindset.")
 
-    # --- 2. THE SAVED MINDSET DECK (Always visible) ---
     st.divider()
     st.header("🗂️ Your Saved Mindsets")
     if not st.session_state.saved_mindsets:
