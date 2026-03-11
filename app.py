@@ -58,6 +58,7 @@ if 'lasso_labels' not in st.session_state: st.session_state.lasso_labels = []
 if 'map_key' not in st.session_state: st.session_state.map_key = 0 
 if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
 if 'corr_matrix' not in st.session_state: st.session_state.corr_matrix = pd.DataFrame()
+if 'saved_mindsets' not in st.session_state: st.session_state.saved_mindsets = [] # NEW DECK STATE
 
 # --- HELPERS ---
 def normalize_strings(s_index):
@@ -261,6 +262,7 @@ with tab1:
                     st.session_state.universe_size = float(p_data.get('universe_size', 258000.0))
                     st.session_state.exact_universe_found = p_data.get('exact_universe_found', False)
                     st.session_state.corr_matrix = p_data.get('corr_matrix', pd.DataFrame())
+                    st.session_state.saved_mindsets = p_data.get('saved_mindsets', []) # Loads deck
                     st.session_state.processed_data = True
                     st.rerun()
                 except: st.error("Load failed.")
@@ -273,7 +275,8 @@ with tab1:
                     'accuracy': st.session_state.accuracy, 
                     'universe_size': st.session_state.universe_size,
                     'exact_universe_found': st.session_state.exact_universe_found,
-                    'corr_matrix': st.session_state.corr_matrix
+                    'corr_matrix': st.session_state.corr_matrix,
+                    'saved_mindsets': st.session_state.saved_mindsets # Saves deck
                 }
                 buffer = io.BytesIO(); pickle.dump(proj_dict, buffer); buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
@@ -508,24 +511,26 @@ with tab1:
                                 short_lbl = truncate_label(r['Label'], label_len)
                                 fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=bc, size=10))
 
+        # --- DEFAULT PAN & SCROLL ZOOM SETTINGS ---
         fig.update_layout(
             template="plotly_white", 
             height=map_height, 
             margin=dict(l=0, r=0, t=30, b=0),
             yaxis_scaleanchor="x", 
-            dragmode='lasso',
+            dragmode='pan', # Set default interaction to Pan/Move
             hoverlabel=dict(bgcolor="white", font_size=14, font_family="Nunito"),
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False), 
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
         )
         
+        # Activate the scroll zoom and constant toolbar
         map_event = st.plotly_chart(
             fig, 
             use_container_width=True, 
             on_select="rerun", 
             selection_mode=('lasso', 'box'), 
             key=f"main_map_{st.session_state.map_key}",
-            config={'displayModeBar': True, 'displaylogo': False}
+            config={'displayModeBar': True, 'displaylogo': False, 'scrollZoom': True}
         )
         
         lasso_raw = []
@@ -548,9 +553,9 @@ with tab1:
         if st.session_state.lasso_labels:
             col_msg, col_btn = st.columns([4, 1])
             with col_msg:
-                st.markdown(f'<div class="success-box">✅ You lassooed {len(st.session_state.lasso_labels)} statements! Edit them in the Count Code Editor tab. (Double-click the map background to clear natively).</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="success-box">✅ You grabbed {len(st.session_state.lasso_labels)} statements! Edit them in the Count Code Editor tab.</div>', unsafe_allow_html=True)
             with col_btn:
-                if st.button("🗑️ Clear Selection", use_container_width=True, help="Click here to remove your drawing from the map and start over."):
+                if st.button("🗑️ Clear Map Selection", use_container_width=True, help="Remove your bubble/lasso from the map."):
                     st.session_state.lasso_labels = []
                     st.session_state.map_key += 1
                     if "ms_items_lasso" in st.session_state: del st.session_state["ms_items_lasso"]
@@ -650,14 +655,12 @@ with tab2:
 
 with tab3:
     st.header("📟 Count Code Editor")
-    st.markdown("Build highly accurate, data-backed audience formulas using the map's Lasso tool.")
     
     if st.session_state.processed_data and not st.session_state.exact_universe_found:
-        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s).")
+        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s) to calculate reach percentages.")
 
-    if not st.session_state.lasso_labels: 
-        st.info("👈 Draw a Lasso on the map to start building your count code!")
-    else:
+    # --- 1. ACTIVE EDITOR (Only shows if there is a shape drawn on the map) ---
+    if st.session_state.lasso_labels:
         safe_univ_tab3 = get_safe_universe()
         weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
         for layer in st.session_state.passive_data:
@@ -667,7 +670,7 @@ with tab3:
 
         with st.container():
             st.markdown("""<div class="custom-mindset-card">
-                <h3 style="color: #4527a0; margin-top:0;">Custom Audience Formula</h3>
+                <h3 style="color: #4527a0; margin-top:0;">Active Selection Editor</h3>
                 <p>Adjust the threshold logic below. To calculate the population size, a valid correlation matrix must be uploaded.</p>
             </div>""", unsafe_allow_html=True)
             
@@ -699,7 +702,6 @@ with tab3:
                     key=th_lasso_key
                 )
 
-                # --- NEW STRICT ACCURACY VALIDATION ---
                 missing_items = []
                 norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
                 
@@ -716,12 +718,10 @@ with tab3:
                         st.markdown(f"- `{m}`")
                     
                     st.markdown("<br>", unsafe_allow_html=True)
-                    # Output the code anyway so they can still use the builder
                     l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
                     st.markdown(f'<div class="logic-tag">MRI SYNTAX (Estimates Locked)</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
 
                 else:
-                    # EXACT CALCULATION
                     valid_items = [i for i in norm_items if i in st.session_state.corr_matrix.index and i in st.session_state.corr_matrix.columns]
                     
                     computed_overlap = 0.0
@@ -764,3 +764,44 @@ with tab3:
 
                     l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
                     st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
+                    
+                    # --- NEW: SAVE TO DECK FEATURE ---
+                    st.markdown("---")
+                    st.markdown("### 💾 Add to Mindset Deck")
+                    col_name, col_save = st.columns([3, 1])
+                    with col_name:
+                        ms_name = st.text_input("Name this Mindset:", value=f"Custom Audience {len(st.session_state.saved_mindsets) + 1}")
+                    with col_save:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("➕ Save Mindset", use_container_width=True):
+                            st.session_state.saved_mindsets.append({
+                                "name": ms_name,
+                                "items": lasso_items,
+                                "threshold": l_thresh,
+                                "pop": l_est_reach,
+                                "pct": l_pct,
+                                "code": l_code,
+                                "overlap": overlap_factor
+                            })
+                            st.success("Saved! Check your deck below.")
+                            st.rerun()
+
+    else:
+        st.info("👈 Use the Box/Lasso tool on the map to draw a bubble around points to build a new mindset.")
+
+    # --- 2. THE SAVED MINDSET DECK (Always visible) ---
+    st.divider()
+    st.header("🗂️ Your Saved Mindsets")
+    if not st.session_state.saved_mindsets:
+        st.markdown("*Your saved audiences will appear here so you can easily copy and paste them into your strategy deck.*")
+    else:
+        for idx, ms in enumerate(st.session_state.saved_mindsets):
+            with st.expander(f"📦 {ms['name']} — {ms['pct']:.1f}% Reach ({ms['pop']:,.0f}k)", expanded=False):
+                st.markdown(f"**Statements Included ({len(ms['items'])}):** {', '.join(ms['items'])}")
+                st.markdown(f"**Logic Rule:** Agree with *At Least {ms['threshold']}* of the {len(ms['items'])} statements.")
+                st.markdown(f"**MRI Overlap Correlation:** {ms['overlap']*100:.1f}%")
+                st.markdown(f'<div class="code-block" style="padding:15px; margin-top:5px; font-size:1em;">{ms["code"]}</div>', unsafe_allow_html=True)
+                
+                if st.button("🗑️ Delete Mindset", key=f"del_ms_{idx}"):
+                    st.session_state.saved_mindsets.pop(idx)
+                    st.rerun()
