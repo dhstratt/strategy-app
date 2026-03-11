@@ -41,7 +41,7 @@ st.markdown("""
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; height: 100%; display: flex; align-items: center;}
         .calibration-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-bottom: 15px;}
-        .error-box { background-color: #fff3e0; border: 1px solid #ff9800; padding: 15px; border-radius: 5px; color: #e65100; margin-bottom: 15px; font-weight: 600;}
+        .error-box { background-color: #ffebee; border: 1px solid #f44336; padding: 15px; border-radius: 5px; color: #c62828; margin-bottom: 15px; font-weight: 600;}
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -217,6 +217,9 @@ def process_data(uploaded_file, passive_files, passive_configs):
                                 p_aligned.iloc[:, col_mapper[norm_col]] = p_c[orig_col].values
                         proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
+                    else:
+                        # Improved error message if data mismatch
+                        status_msg = "❌ No Column Match! Use Tab 2 Cleaner."
                 else:
                     if common_r_count > 0:
                         status_msg = f"✅ Aligned by {common_r_count} Rows"
@@ -226,12 +229,14 @@ def process_data(uploaded_file, passive_files, passive_configs):
                                 p_aligned.iloc[row_mapper[norm_row], :] = p_c.loc[orig_row].values
                         proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
+                    else:
+                        status_msg = "❌ No Row Match! Use Tab 2 Cleaner."
                 
                 if not p_aligned.empty and proj.size > 0:
                     res['LayerName'] = cfg['name']; res['Visible'] = cfg['show']; res['Status'] = status_msg
                     pass_list.append(res)
                 else:
-                    pass_list.append({'LayerName': cfg['name'], 'Status': "⚠️ Alignment Failed", 'Label': [], 'Visible': False})
+                    pass_list.append({'LayerName': cfg['name'], 'Status': status_msg, 'Label': [], 'Visible': False})
             
             st.session_state.passive_data = pass_list
     except Exception as e:
@@ -485,13 +490,15 @@ with tab1:
                         sub = layer[layer['Cluster'] == cid]
                         bc = ai_colors[cid % 10]
                         res = [get_so(r['Label'], bc) for _,r in sub.iterrows()]
+                        
+                        # --- BUG FIX: text=sub['Label'] instead of text=layer['Label'] ---
                         fig.add_trace(go.Scatter(
                             x=sub['x'], y=sub['y'], mode='markers', 
                             marker=dict(size=12, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
                             text=sub['Label'], customdata=sub['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
                         ))
                         if lbl_passive:
-                            for _, r in sub.iterrows(): # Fixed hover matching issue
+                            for _, r in sub.iterrows():
                                 color, opac = get_so(r['Label'], bc)
                                 if opac > 0.3: 
                                     short_lbl = truncate_label(r['Label'], label_len)
@@ -710,7 +717,6 @@ with tab3:
                     key=th_lasso_key
                 )
 
-                # --- SMART FALLBACK LOGIC ---
                 norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
                 missing_items = []
                 
@@ -722,9 +728,8 @@ with tab3:
                     missing_items = lasso_items
                 
                 is_calibrated = False
-                computed_overlap = 0.75 # default backup
+                computed_overlap = 0.75 
                 
-                # Check what is valid in the matrix
                 if not st.session_state.corr_matrix.empty:
                     valid_norms = [n for n in norm_items if n in st.session_state.corr_matrix.index and n in st.session_state.corr_matrix.columns]
                     if len(valid_norms) > 1:
@@ -746,7 +751,7 @@ with tab3:
                     if st.session_state.corr_matrix.empty:
                         st.info("💡 Upload a Correlation Matrix in the sidebar to automate strict math matching. Using manual Overlap Estimator below.")
                     else:
-                        st.markdown(f"<div class='error-box'>⚠️ <b>Partial Calibration:</b> The following items are missing from your uploaded matrix (likely Passive Layers): <br> `{', '.join(missing_items)}` <br><br> We are suggesting a baseline overlap below, but you can manually adjust the estimation probability.</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='error-box'>⚠️ <b>Partial Calibration:</b> The following items are missing from your uploaded matrix: <br> `{', '.join(missing_items)}` <br><br> We are suggesting a baseline overlap below, but you can manually adjust the estimation probability.</div>", unsafe_allow_html=True)
                         
                     overlap_factor = st.slider(
                         "🧠 Overlap Assumption (Correlation Estimator)", 
