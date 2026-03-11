@@ -35,8 +35,6 @@ st.markdown("""
             background-color: #f3e5f5; margin-bottom: 25px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
-        .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
-        .size-badge-custom { float: right; background: #4527a0; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; height: 100%; display: flex; align-items: center;}
@@ -56,7 +54,6 @@ if 'df_attrs' not in st.session_state: st.session_state.df_attrs = pd.DataFrame(
 if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
 if 'lasso_labels' not in st.session_state: st.session_state.lasso_labels = []
 if 'map_key' not in st.session_state: st.session_state.map_key = 0 
-if 'mindset_report' not in st.session_state: st.session_state.mindset_report = []
 if 'corr_matrix' not in st.session_state: st.session_state.corr_matrix = pd.DataFrame()
 if 'saved_mindsets' not in st.session_state: st.session_state.saved_mindsets = []
 
@@ -80,12 +77,8 @@ def clean_df(df_input, is_core=False):
     df[label_col] = df[label_col].str.replace('"', '', regex=False)
     df[label_col] = df[label_col].str.strip()
     
-    # Drop duplicate columns
     df = df.loc[:, ~df.columns.duplicated()].copy()
-    
     df = df.set_index(label_col)
-    
-    # Drop duplicate rows (safeguard against messy MRI files)
     df = df[~df.index.duplicated(keep='first')]
     
     for col in df.columns:
@@ -124,7 +117,6 @@ def rotate_coords(df_to_rot, angle_deg):
 
 def process_correlation_matrix(uploaded_file):
     try:
-        # Securely read Bytes to prevent buffer reset
         file_bytes = uploaded_file.getvalue()
         df_corr = pd.read_csv(io.BytesIO(file_bytes), index_col=0) if uploaded_file.name.endswith('.csv') else pd.read_excel(io.BytesIO(file_bytes), index_col=0)
         df_corr.index = normalize_strings(df_corr.index)
@@ -140,7 +132,6 @@ def process_correlation_matrix(uploaded_file):
 
 def calculate_clustered_reach(weights_list, threshold, universe_size, overlap_factor):
     if not weights_list or threshold == 0: return 0
-    
     N = len(weights_list)
     K = threshold
     perfect_reach = np.mean(weights_list)
@@ -149,19 +140,9 @@ def calculate_clustered_reach(weights_list, threshold, universe_size, overlap_fa
     if avg_p >= 1.0: avg_p = 0.99
     if avg_p <= 0.0: return perfect_reach 
     
-    indep_prob = 0
-    for k in range(K, N + 1):
-        if avg_p == 0:
-            term = 0 if k > 0 else 1
-        elif avg_p == 1:
-            term = 1 if k == N else 0
-        else:
-            term = math.comb(N, k) * (avg_p**k) * ((1 - avg_p)**(N - k))
-        indep_prob += term
-    
+    indep_prob = sum(math.comb(N, k) * (avg_p**k) * ((1 - avg_p)**(N - k)) for k in range(K, N + 1))
     indep_reach = indep_prob * universe_size
-    estimated_reach = (overlap_factor * perfect_reach) + ((1.0 - overlap_factor) * indep_reach)
-    return estimated_reach
+    return (overlap_factor * perfect_reach) + ((1.0 - overlap_factor) * indep_reach)
 
 def get_safe_universe():
     return st.session_state.universe_size if st.session_state.universe_size > 0 else 258000.0
@@ -171,7 +152,6 @@ def get_safe_universe():
 # ==========================================
 def process_data(uploaded_file, passive_files, passive_configs):
     try:
-        # Secure core data buffer
         core_bytes = uploaded_file.getvalue()
         raw_data = pd.read_csv(io.BytesIO(core_bytes)) if uploaded_file.name.endswith('.csv') else pd.read_excel(io.BytesIO(core_bytes))
         df_math_ready = clean_df(raw_data, is_core=True)
@@ -201,7 +181,6 @@ def process_data(uploaded_file, passive_files, passive_configs):
 
             for i, cfg in enumerate(passive_configs):
                 pf = cfg['file']
-                # Secure passive buffer
                 pf_bytes = pf.getvalue()
                 p_raw = pd.read_csv(io.BytesIO(pf_bytes)) if pf.name.endswith('.csv') else pd.read_excel(io.BytesIO(pf_bytes))
                 p_c = clean_df(p_raw, is_core=False)
@@ -212,14 +191,9 @@ def process_data(uploaded_file, passive_files, passive_configs):
                 common_b_count = sum(1 for x in p_cols_norm if x in col_mapper)
                 common_r_count = sum(1 for x in p_idx_norm if x in row_mapper)
                 
-                # --- SAFER RADIO LOGIC ---
-                is_rows = True
-                if cfg["mode"] == "Rows (Stars)":
-                    is_rows = True
-                elif cfg["mode"] == "Columns (Diamonds)":
-                    is_rows = False
-                else:
-                    is_rows = common_b_count >= common_r_count
+                if cfg["mode"] == "Rows (Stars)": is_rows = True
+                elif cfg["mode"] == "Columns (Diamonds)": is_rows = False
+                else: is_rows = common_b_count >= common_r_count
                 
                 proj = np.array([]); p_aligned = pd.DataFrame()
                 status_msg = "❌ No Match"
@@ -229,8 +203,7 @@ def process_data(uploaded_file, passive_files, passive_configs):
                         status_msg = f"✅ Aligned by {common_b_count} Columns"
                         p_aligned = pd.DataFrame(0.0, index=p_c.index, columns=df_math.columns)
                         for orig_col, norm_col in zip(p_c.columns, p_cols_norm):
-                            if norm_col in col_mapper:
-                                p_aligned.iloc[:, col_mapper[norm_col]] = p_c[orig_col].values
+                            if norm_col in col_mapper: p_aligned.iloc[:, col_mapper[norm_col]] = p_c[orig_col].values
                         proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
                     else:
@@ -240,8 +213,7 @@ def process_data(uploaded_file, passive_files, passive_configs):
                         status_msg = f"✅ Aligned by {common_r_count} Rows"
                         p_aligned = pd.DataFrame(0.0, index=df_math.index, columns=p_c.columns)
                         for orig_row, norm_row in zip(p_c.index, p_idx_norm):
-                            if norm_row in row_mapper:
-                                p_aligned.iloc[row_mapper[norm_row], :] = p_c.loc[orig_row].values
+                            if norm_row in row_mapper: p_aligned.iloc[row_mapper[norm_row], :] = p_c.loc[orig_row].values
                         proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
                         res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
                     else:
@@ -252,7 +224,6 @@ def process_data(uploaded_file, passive_files, passive_configs):
                     pass_list.append(res)
                 else:
                     pass_list.append({'LayerName': cfg['name'], 'Status': status_msg, 'Label': [], 'Visible': False})
-            
             st.session_state.passive_data = pass_list
     except Exception as e:
         st.error(f"Processing Error: {e}")
@@ -275,28 +246,17 @@ with tab1:
             if uploaded_project:
                 try:
                     p_data = pickle.load(uploaded_project)
-                    st.session_state.df_brands = p_data['df_brands']
-                    st.session_state.df_attrs = p_data['df_attrs']
-                    st.session_state.passive_data = p_data['passive_data']
-                    st.session_state.accuracy = p_data['accuracy']
-                    st.session_state.universe_size = float(p_data.get('universe_size', 258000.0))
-                    st.session_state.exact_universe_found = p_data.get('exact_universe_found', False)
-                    st.session_state.corr_matrix = p_data.get('corr_matrix', pd.DataFrame())
-                    st.session_state.saved_mindsets = p_data.get('saved_mindsets', []) 
+                    st.session_state.update(p_data)
                     st.session_state.processed_data = True
                     st.rerun()
                 except: st.error("Load failed.")
             if st.session_state.processed_data:
                 proj_name = st.text_input("Project Name", "Strategy_Map")
                 proj_dict = {
-                    'df_brands': st.session_state.df_brands, 
-                    'df_attrs': st.session_state.df_attrs, 
-                    'passive_data': st.session_state.passive_data, 
-                    'accuracy': st.session_state.accuracy, 
-                    'universe_size': st.session_state.universe_size,
-                    'exact_universe_found': st.session_state.exact_universe_found,
-                    'corr_matrix': st.session_state.corr_matrix,
-                    'saved_mindsets': st.session_state.saved_mindsets 
+                    'df_brands': st.session_state.df_brands, 'df_attrs': st.session_state.df_attrs, 
+                    'passive_data': st.session_state.passive_data, 'accuracy': st.session_state.accuracy, 
+                    'universe_size': st.session_state.universe_size, 'exact_universe_found': st.session_state.exact_universe_found,
+                    'corr_matrix': st.session_state.corr_matrix, 'saved_mindsets': st.session_state.saved_mindsets 
                 }
                 buffer = io.BytesIO(); pickle.dump(proj_dict, buffer); buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
@@ -331,8 +291,7 @@ with tab1:
         st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab/Correlation Matrix to activate strictly accurate population math in the Count Code Editor.</span>", unsafe_allow_html=True)
         corr_file = st.file_uploader("Upload Matrix File", type=["csv", "xlsx", "xls"], key="corr_upload")
         if corr_file:
-            if process_correlation_matrix(corr_file):
-                st.success("✅ Matrix Calibrated Successfully.")
+            if process_correlation_matrix(corr_file): st.success("✅ Matrix Calibrated Successfully.")
 
         if st.session_state.processed_data:
             st.divider()
@@ -348,16 +307,14 @@ with tab1:
 
         st.divider()
         st.header("🏷️ Map Controls")
-        
         f_brand = "None"
         if st.session_state.processed_data:
-            b_list = sorted(st.session_state.df_brands['Label'].tolist(), key=str.casefold)
-            f_brand = st.selectbox("Highlight Column:", ["None"] + b_list)
+            f_brand = st.selectbox("Highlight Column:", ["None"] + sorted(st.session_state.df_brands['Label'].tolist(), key=str.casefold))
 
         lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
         lbl_passive = st.checkbox("Passive Labels", True)
-        label_len = st.slider("Label Length (Words)", min_value=1, max_value=15, value=5, help="Shorten text on the map to reduce clutter. Hover over dots to see full text.")
+        label_len = st.slider("Label Length (Words)", 1, 15, 5, help="Shorten text on the map to reduce clutter. Hover over dots to see full text.")
         
         placeholder_filters = st.container()
 
@@ -366,12 +323,11 @@ with tab1:
         enable_clustering = st.checkbox("Show Suggested Clusters (AI Boss)", False) 
         if enable_clustering:
             num_clusters = st.slider("Suggested # of Mindsets", 2, 8, 4)
-            strictness = st.slider("🎯 AI Cluster Tightness", 0, 100, 30)
 
         st.divider()
         st.header("🔄 View Settings")
         map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
-        map_height = st.slider("Map Height (Fit to screen)", min_value=500, max_value=1200, value=650, step=50, help="Adjust this so the entire map fits on your screen without scrolling. This keeps the Lasso tool always visible!")
+        map_height = st.slider("Map Height (Fit to screen)", 500, 1200, 650, step=50, help="Adjust this so the entire map fits on your screen without scrolling. This keeps the Box tool always visible!")
 
     # --- RENDER ---
     if st.session_state.processed_data:
@@ -384,11 +340,8 @@ with tab1:
         df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source if isinstance(l, pd.DataFrame) and 'x' in l.columns]
         
         if enable_clustering and HAS_SKLEARN:
-            dfs_to_cluster = [df_a[['x', 'y']]]
-            for l in df_p_list:
-                if not l.empty: dfs_to_cluster.append(l[['x', 'y']])
+            dfs_to_cluster = [df_a[['x', 'y']]] + [l[['x', 'y']] for l in df_p_list if not l.empty]
             pool = pd.concat(dfs_to_cluster)
-            
             kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
             df_a['Cluster'] = kmeans.predict(df_a[['x', 'y']])
             df_b['Cluster'] = kmeans.predict(df_b[['x', 'y']]) 
@@ -434,30 +387,301 @@ with tab1:
 
         ai_colors = px.colors.qualitative.Bold
 
-        if show_base_cols:
+        # --- OPTIMIZED MAP PLOTTING FUNCTION ---
+        def plot_layer(df_plot, shape, base_color, show_labels, size=10, is_brand=False):
+            if df_plot.empty: return
             if enable_clustering:
-                for cid in sorted(df_b['Cluster'].unique()):
-                    sub = df_b[df_b['Cluster'] == cid]
+                for cid in sorted(df_plot['Cluster'].unique()):
+                    sub = df_plot[df_plot['Cluster'] == cid]
                     bc = ai_colors[cid % 10]
-                    res = [get_so(r['Label'], bc) for _,r in sub.iterrows()]
+                    res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
                     fig.add_trace(go.Scatter(
-                        x=sub['x'], y=sub['y'], 
-                        mode='markers', 
-                        marker=dict(size=14, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
+                        x=sub['x'], y=sub['y'], mode='markers',
+                        marker=dict(size=size, symbol=shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')),
                         text=sub['Label'], customdata=sub['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
                     ))
-                    if lbl_cols:
+                    if show_labels:
                         for _, r in sub.iterrows():
                             color, opac = get_so(r['Label'], bc)
-                            short_lbl = truncate_label(r['Label'], label_len)
-                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=bc, size=12))
+                            if opac > 0.3 or is_brand:
+                                short_lbl = truncate_label(r['Label'], label_len)
+                                fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10 if is_brand else 8, font=dict(color=bc, size=12 if is_brand else 10))
             else:
-                bc = '#1f77b4'
-                res = [get_so(r['Label'], bc) for _,r in df_b.iterrows()]
+                res = [get_so(r['Label'], base_color) for _, r in df_plot.iterrows()]
                 fig.add_trace(go.Scatter(
-                    x=df_b['x'], y=df_b['y'], mode='markers', 
-                    marker=dict(size=14, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
-                    text=df_b['Label'], customdata=df_b['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
+                    x=df_plot['x'], y=df_plot['y'], mode='markers',
+                    marker=dict(size=size, symbol=shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')),
+                    text=df_plot['Label'], customdata=df_plot['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
                 ))
-                if lbl_cols:
-                    for _, r
+                if show_labels:
+                    for _, r in df_plot.iterrows():
+                        color, opac = get_so(r['Label'], base_color)
+                        if opac > 0.3 or is_brand:
+                            short_lbl = truncate_label(r['Label'], label_len)
+                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10 if is_brand else 8, font=dict(color=base_color, size=12 if is_brand else 10))
+
+        if show_base_cols: plot_layer(df_b, 'circle', '#1f77b4', lbl_cols, size=14, is_brand=True)
+        if show_base_rows: plot_layer(df_a, 'circle', '#d62728', lbl_rows, size=10, is_brand=False)
+        for i, layer in enumerate(df_p_list):
+            if not layer.empty and layer['Visible'].iloc[0]:
+                plot_layer(layer, layer['Shape'].iloc[0], '#555', lbl_passive, size=12, is_brand=False)
+
+        fig.update_layout(
+            template="plotly_white", height=map_height, margin=dict(l=0, r=0, t=30, b=0),
+            yaxis_scaleanchor="x", dragmode='pan', hoverlabel=dict(bgcolor="white", font_size=14, font_family="Nunito"),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False), 
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
+        )
+        
+        map_event = st.plotly_chart(
+            fig, use_container_width=True, on_select="rerun", selection_mode=('lasso', 'box'), 
+            key=f"main_map_{st.session_state.map_key}", config={'displayModeBar': True, 'displaylogo': False, 'scrollZoom': True}
+        )
+        
+        lasso_raw = []
+        if map_event and hasattr(map_event, 'selection') and map_event.selection.get("points"):
+            for pt in map_event.selection["points"]:
+                if "customdata" in pt: lasso_raw.append(pt["customdata"])
+                elif "text" in pt: lasso_raw.append(pt["text"])
+            
+            core_brands = set(st.session_state.df_brands['Label'])
+            st.session_state.lasso_labels = [lbl for lbl in lasso_raw if lbl not in core_brands]
+        else:
+            st.session_state.lasso_labels = []
+
+        if st.session_state.lasso_labels:
+            col_msg, col_btn = st.columns([4, 1])
+            with col_msg:
+                st.markdown(f'<div class="success-box">✅ You bubbled {len(st.session_state.lasso_labels)} statements! Edit them in the Count Code Editor tab. (Select the "Pan" hand tool to move the map).</div>', unsafe_allow_html=True)
+            with col_btn:
+                if st.button("🗑️ Clear Bubble/Selection", use_container_width=True):
+                    st.session_state.lasso_labels = []
+                    st.session_state.map_key += 1
+                    if "ms_items_lasso" in st.session_state: del st.session_state["ms_items_lasso"]
+                    if "ms_thresh_lasso" in st.session_state: del st.session_state["ms_thresh_lasso"]
+                    st.rerun()
+
+with tab2:
+    st.header("🧹 MRI Data Cleaner")
+    st.markdown("Use this tool to clean up messy MRI exports so they are perfectly formatted for the app.")
+    
+    cleaner_mode = st.radio("What type of data are you cleaning?", [
+        "Base Map Data (Brands x Attributes)", 
+        "Passive Layer Data (Brands x Demographics/Media)",
+        "Correlation Matrix (Square Crosstab for Calibration)"
+    ])
+    
+    raw_mri = st.file_uploader("Upload Raw Export", type=["csv", "xlsx", "xls"])
+    
+    if raw_mri:
+        try:
+            df_r = pd.read_csv(raw_mri, header=None) if raw_mri.name.endswith('.csv') else pd.read_excel(raw_mri, header=None)
+            
+            if cleaner_mode == "Base Map Data (Brands x Attributes)" or cleaner_mode == "Passive Layer Data (Brands x Demographics/Media)":
+                idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("Weighted \\(000\\)", regex=True).any())
+                
+                brand_row = df_r.iloc[idx-1].tolist()
+                last_val = "Unknown"
+                for i in range(len(brand_row)):
+                    val = str(brand_row[i]).strip()
+                    if val == "" or val == "nan" or val == "None": brand_row[i] = last_val
+                    else: last_val = val
+                brand_r = pd.Series(brand_row)
+                
+                metric_r = df_r.iloc[idx]
+                data_r = df_r.iloc[idx+1:].copy()
+                
+                c_idx, h = [0], ['Attitude']
+                for c in range(1, len(metric_r)):
+                    if "Weighted" in str(metric_r[c]):
+                        b_str = str(brand_r[c])
+                        if "Universe" not in b_str and "Total" not in b_str and b_str != 'nan': 
+                            c_idx.append(c); h.append(b_str)
+                
+                df_c = data_r.iloc[:, c_idx]; df_c.columns = h
+                df_c.iloc[:, 0] = df_c.iloc[:, 0].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
+                for i in range(1, len(df_c.columns)):
+                    df_c.iloc[:, i] = pd.to_numeric(df_c.iloc[:, i].astype(str).str.replace(',', '', regex=False), errors='coerce')
+                
+                df_c = df_c.loc[:, ~df_c.columns.duplicated()]
+                df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
+                
+                if cleaner_mode == "Base Map Data (Brands x Attributes)":
+                    st.success("✅ Base Map Data Cleaned!")
+                    st.download_button("Download Cleaned Base Data", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Base_Data.csv")
+                else:
+                    st.success("✅ Passive Layer Data Cleaned!")
+                    st.download_button("Download Cleaned Passive Layer", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Passive_Layer.csv")
+
+            else:
+                idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("%|Percent|Target", case=False, regex=True).any())
+                statement_row = df_r.iloc[idx-1].tolist()
+                last_val = "Unknown"
+                for i in range(len(statement_row)):
+                    val = str(statement_row[i]).strip()
+                    if val == "" or val == "nan" or val == "None": statement_row[i] = last_val
+                    else: last_val = val
+                statement_r = pd.Series(statement_row)
+                
+                metric_r = df_r.iloc[idx]
+                data_r = df_r.iloc[idx+1:].copy()
+                
+                c_idx, h = [0], ['Attitude']
+                for c in range(1, len(metric_r)):
+                    val = str(metric_r[c]).lower()
+                    if "%" in val or "target" in val or "detail" in val or "row" in val or "horiz" in val or "vert" in val:
+                        s_str = str(statement_r[c])
+                        if "Universe" not in s_str and "Total" not in s_str and s_str != 'nan':
+                            c_idx.append(c); h.append(s_str)
+                
+                df_c = data_r.iloc[:, c_idx]; df_c.columns = h
+                df_c.iloc[:, 0] = df_c.iloc[:, 0].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
+                
+                new_cols = ['Attitude']
+                for col in df_c.columns[1:]:
+                    new_cols.append(str(col).replace('General Attitudes: ', '').replace('_Any Agree', '').replace('"', '').strip())
+                df_c.columns = new_cols
+                
+                for i in range(1, len(df_c.columns)):
+                    df_c.iloc[:, i] = df_c.iloc[:, i].astype(str).str.replace(r'[%,]', '', regex=True)
+                    df_c.iloc[:, i] = pd.to_numeric(df_c.iloc[:, i], errors='coerce') / 100.0 
+                
+                df_c = df_c.loc[:, ~df_c.columns.duplicated()]
+                df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
+                
+                st.success("✅ Correlation Matrix Cleaned and Formatted!")
+                st.download_button("Download Cleaned Matrix", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Correlation_Matrix.csv")
+
+        except Exception as e:
+            st.error(f"Format error: {e}")
+
+with tab3:
+    st.header("📟 Count Code Editor")
+    if st.session_state.processed_data and not st.session_state.exact_universe_found:
+        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s) to calculate reach percentages.")
+
+    if st.session_state.lasso_labels:
+        safe_univ_tab3 = get_safe_universe()
+        weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
+        for layer in st.session_state.passive_data:
+            if isinstance(layer, pd.DataFrame) and not layer.empty and 'Label' in layer.columns and 'Weight' in layer.columns:
+                weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
+        all_available_labels = sorted(list(weight_lookup.keys()))
+
+        with st.container():
+            st.markdown("""<div class="custom-mindset-card">
+                <h3 style="color: #4527a0; margin-top:0;">Active Selection Editor</h3>
+                <p>Adjust the threshold logic below to refine your audience definition.</p>
+            </div>""", unsafe_allow_html=True)
+            
+            lasso_key = "ms_items_lasso"
+            th_lasso_key = "ms_thresh_lasso"
+            
+            if lasso_key not in st.session_state or set(st.session_state.get('last_lasso_drawn', [])) != set(st.session_state.lasso_labels):
+                st.session_state[lasso_key] = st.session_state.lasso_labels
+                st.session_state['last_lasso_drawn'] = st.session_state.lasso_labels.copy()
+            
+            lasso_items = st.multiselect("Selected Statements (Add or Remove):", options=all_available_labels, default=st.session_state[lasso_key], key=lasso_key)
+            
+            if lasso_items:
+                l_num_items = len(lasso_items)
+                l_min_majority = max(1, (l_num_items // 2) + 1)
+                
+                if th_lasso_key not in st.session_state or st.session_state[th_lasso_key] < l_min_majority or st.session_state[th_lasso_key] > l_num_items:
+                    st.session_state[th_lasso_key] = l_min_majority
+
+                l_thresh = st.slider("Count Code Threshold (At least X out of Y):", min_value=1, max_value=l_num_items, value=st.session_state[th_lasso_key], key=th_lasso_key)
+
+                norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
+                missing_items = []
+                
+                if not st.session_state.corr_matrix.empty:
+                    for orig, norm in zip(lasso_items, norm_items):
+                        if norm not in st.session_state.corr_matrix.index or norm not in st.session_state.corr_matrix.columns:
+                            missing_items.append(orig)
+                else:
+                    missing_items = lasso_items
+                
+                is_calibrated = False
+                computed_overlap = 0.75 
+                
+                if not st.session_state.corr_matrix.empty:
+                    valid_norms = [n for n in norm_items if n in st.session_state.corr_matrix.index and n in st.session_state.corr_matrix.columns]
+                    if len(valid_norms) > 1:
+                        sub_matrix = st.session_state.corr_matrix.loc[valid_norms, valid_norms]
+                        mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
+                        avg_matrix_val = sub_matrix.where(mask).mean().mean()
+                        if pd.notna(avg_matrix_val): computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
+                    elif len(valid_norms) == 1:
+                        computed_overlap = 1.0
+                
+                if not st.session_state.corr_matrix.empty and len(missing_items) == 0:
+                    is_calibrated = True
+
+                if is_calibrated:
+                    st.markdown(f"<div class='calibration-box'>✅ <b>MRI Matrix Calibrated:</b> The exact average pairwise correlation of this custom audience is <b>{computed_overlap*100:.1f}%</b>.</div>", unsafe_allow_html=True)
+                    overlap_factor = computed_overlap
+                else:
+                    if st.session_state.corr_matrix.empty:
+                        st.info("💡 Upload a Correlation Matrix in the sidebar to automate strict math matching. Using manual Overlap Estimator below.")
+                    else:
+                        st.markdown(f"<div class='error-box'>⚠️ <b>Partial Calibration:</b> The following items are missing from your uploaded matrix: <br> `{', '.join(missing_items)}` <br><br> We are suggesting a baseline overlap below, but you can manually adjust the estimation probability.</div>", unsafe_allow_html=True)
+                        
+                    overlap_factor = st.slider("🧠 Overlap Assumption (Correlation Estimator)", min_value=0.0, max_value=1.0, value=float(computed_overlap), step=0.05)
+                    
+                l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
+                w_array = [weight_lookup.get(item, 0) for item in lasso_items]
+                l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
+                l_pct = (l_est_reach / safe_univ_tab3) * 100
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    bar_color = '#2e7d32' if l_pct <= 40 else '#c62828'
+                    st.markdown(f"""
+                        <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
+                            <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+                            <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Target Reach</span>
+                            <span style="color: #666">40% Recommendation Cap</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold or remove statements.")
+
+                with col2:
+                    st.markdown(f"**Exact Population Size:** {l_est_reach:,.0f} (000s)")
+                    st.markdown(f"*(Avg. Baseline for Reference: ~{(l_target_pop/safe_univ_tab3)*100:.1f}%)*")
+
+                l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
+                st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
+                
+                st.markdown("---")
+                st.markdown("### 💾 Add to Mindset Deck")
+                col_name, col_save = st.columns([3, 1])
+                with col_name: ms_name = st.text_input("Name this Mindset:", value=f"Custom Audience {len(st.session_state.saved_mindsets) + 1}")
+                with col_save:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("➕ Save Mindset", use_container_width=True):
+                        st.session_state.saved_mindsets.append({
+                            "name": ms_name, "items": lasso_items, "threshold": l_thresh,
+                            "pop": l_est_reach, "pct": l_pct, "code": l_code, "overlap": overlap_factor
+                        })
+                        st.success("Saved! Check your deck below.")
+                        st.rerun()
+    else:
+        st.info("👈 Open the Map toolbar, select the 'Box Select' (bubble) icon, and draw around points to build a new mindset.")
+
+    st.divider()
+    st.header("🗂️ Your Saved Mindsets")
+    if not st.session_state.saved_mindsets:
+        st.markdown("*Your saved audiences will appear here so you can easily copy and paste them into your strategy deck.*")
+    else:
+        for idx, ms in enumerate(st.session_state.saved_mindsets):
+            with st.expander(f"📦 {ms['name']} — {ms['pct']:.1f}% Reach ({ms['pop']:,.0f}k)", expanded=False):
+                st.markdown(f"**Statements Included ({len(ms['items'])}):** {', '.join(ms['items'])}")
+                st.markdown(f"**Logic Rule:** Agree with *At Least {ms['threshold']}* of the {len(ms['items'])} statements.")
+                st.markdown(f"**MRI Overlap Correlation:** {ms['overlap']*100:.1f}%")
+                st.markdown(f'<div class="code-block" style="padding:15px; margin-top:5px; font-size:1em;">{ms["code"]}</div>', unsafe_allow_html=True)
+                if st.button("🗑️ Delete Mindset", key=f"del_ms_{idx}"):
+                    st.session_state.saved_mindsets.pop(idx)
+                    st.rerun()
