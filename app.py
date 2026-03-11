@@ -41,7 +41,7 @@ st.markdown("""
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; height: 100%; display: flex; align-items: center;}
         .calibration-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-bottom: 15px;}
-        .error-box { background-color: #ffebee; border: 1px solid #f44336; padding: 15px; border-radius: 5px; color: #c62828; margin-bottom: 15px; font-weight: 600;}
+        .error-box { background-color: #fff3e0; border: 1px solid #ff9800; padding: 15px; border-radius: 5px; color: #e65100; margin-bottom: 15px; font-weight: 600;}
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -351,7 +351,7 @@ with tab1:
         st.divider()
         st.header("🔄 View Settings")
         map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
-        map_height = st.slider("Map Height (Fit to screen)", min_value=500, max_value=1200, value=650, step=50, help="Adjust this so the entire map fits on your screen without scrolling. This keeps the Box tool always visible!")
+        map_height = st.slider("Map Height (Fit to screen)", min_value=500, max_value=1200, value=650, step=50, help="Adjust this so the entire map fits on your screen without scrolling. This keeps the Lasso tool always visible!")
 
     # --- RENDER ---
     if st.session_state.processed_data:
@@ -488,10 +488,10 @@ with tab1:
                         fig.add_trace(go.Scatter(
                             x=sub['x'], y=sub['y'], mode='markers', 
                             marker=dict(size=12, symbol=l_shape, color=[r[0] for r in res], opacity=[r[1] for r in res], line=dict(width=1, color='white')), 
-                            text=layer['Label'], customdata=layer['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
+                            text=sub['Label'], customdata=sub['Label'], hovertemplate="<b>%{customdata}</b><extra></extra>", showlegend=False
                         ))
                         if lbl_passive:
-                            for _, r in layer.iterrows():
+                            for _, r in sub.iterrows(): # Fixed hover matching issue
                                 color, opac = get_so(r['Label'], bc)
                                 if opac > 0.3: 
                                     short_lbl = truncate_label(r['Label'], label_len)
@@ -511,7 +511,6 @@ with tab1:
                                 short_lbl = truncate_label(r['Label'], label_len)
                                 fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10, font=dict(color=bc, size=10))
 
-        # --- DRAGMODE='PAN' AS DEFAULT ---
         fig.update_layout(
             template="plotly_white", 
             height=map_height, 
@@ -523,7 +522,6 @@ with tab1:
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
         )
         
-        # --- SCROLL ZOOM AND PERSISTENT TOOLBAR ACTIVATED ---
         map_event = st.plotly_chart(
             fig, 
             use_container_width=True, 
@@ -566,7 +564,6 @@ with tab2:
     st.header("🧹 MRI Data Cleaner")
     st.markdown("Use this tool to clean up messy MRI exports so they are perfectly formatted for the app.")
     
-    # --- NEW OPTION ADDED FOR PASSIVE LAYERS ---
     cleaner_mode = st.radio(
         "What type of data are you cleaning?", 
         [
@@ -617,7 +614,6 @@ with tab2:
                     st.success("✅ Base Map Data Cleaned!")
                     st.download_button("Download Cleaned Base Data", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Base_Data.csv")
                 else:
-                    # --- NEW DOWNLOAD FOR PASSIVES ---
                     st.success("✅ Passive Layer Data Cleaned!")
                     st.download_button("Download Cleaned Passive Layer", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Passive_Layer.csv")
 
@@ -683,7 +679,7 @@ with tab3:
         with st.container():
             st.markdown("""<div class="custom-mindset-card">
                 <h3 style="color: #4527a0; margin-top:0;">Active Selection Editor</h3>
-                <p>Adjust the threshold logic below. To calculate the population size, a valid correlation matrix must be uploaded.</p>
+                <p>Adjust the threshold logic below to refine your audience definition.</p>
             </div>""", unsafe_allow_html=True)
             
             lasso_key = "ms_items_lasso"
@@ -714,88 +710,96 @@ with tab3:
                     key=th_lasso_key
                 )
 
-                missing_items = []
+                # --- SMART FALLBACK LOGIC ---
                 norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
+                missing_items = []
                 
-                if st.session_state.corr_matrix.empty:
-                    missing_items = lasso_items
-                else:
+                if not st.session_state.corr_matrix.empty:
                     for orig, norm in zip(lasso_items, norm_items):
                         if norm not in st.session_state.corr_matrix.index or norm not in st.session_state.corr_matrix.columns:
                             missing_items.append(orig)
-
-                if missing_items:
-                    st.markdown("<div class='error-box'>⚠️ <b>Calibration Required:</b> To ensure absolute MRI accuracy, the sizing engine requires real data. Please upload a comprehensive Correlation Matrix in the 'Advanced Calibration' sidebar that includes the following missing statements:</div>", unsafe_allow_html=True)
-                    for m in missing_items:
-                        st.markdown(f"- `{m}`")
-                    
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
-                    st.markdown(f'<div class="logic-tag">MRI SYNTAX (Estimates Locked)</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
-
                 else:
-                    valid_items = [i for i in norm_items if i in st.session_state.corr_matrix.index and i in st.session_state.corr_matrix.columns]
-                    
-                    computed_overlap = 0.0
-                    if len(valid_items) > 1:
-                        sub_matrix = st.session_state.corr_matrix.loc[valid_items, valid_items]
+                    missing_items = lasso_items
+                
+                is_calibrated = False
+                computed_overlap = 0.75 # default backup
+                
+                # Check what is valid in the matrix
+                if not st.session_state.corr_matrix.empty:
+                    valid_norms = [n for n in norm_items if n in st.session_state.corr_matrix.index and n in st.session_state.corr_matrix.columns]
+                    if len(valid_norms) > 1:
+                        sub_matrix = st.session_state.corr_matrix.loc[valid_norms, valid_norms]
                         mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
                         avg_matrix_val = sub_matrix.where(mask).mean().mean()
                         if pd.notna(avg_matrix_val):
                             computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
-                    elif len(valid_items) == 1:
-                        computed_overlap = 1.0 
-                        
+                    elif len(valid_norms) == 1:
+                        computed_overlap = 1.0
+                
+                if not st.session_state.corr_matrix.empty and len(missing_items) == 0:
+                    is_calibrated = True
+
+                if is_calibrated:
                     st.markdown(f"<div class='calibration-box'>✅ <b>MRI Matrix Calibrated:</b> The exact average pairwise correlation of this custom audience is <b>{computed_overlap*100:.1f}%</b>.</div>", unsafe_allow_html=True)
-                    
                     overlap_factor = computed_overlap
+                else:
+                    if st.session_state.corr_matrix.empty:
+                        st.info("💡 Upload a Correlation Matrix in the sidebar to automate strict math matching. Using manual Overlap Estimator below.")
+                    else:
+                        st.markdown(f"<div class='error-box'>⚠️ <b>Partial Calibration:</b> The following items are missing from your uploaded matrix (likely Passive Layers): <br> `{', '.join(missing_items)}` <br><br> We are suggesting a baseline overlap below, but you can manually adjust the estimation probability.</div>", unsafe_allow_html=True)
+                        
+                    overlap_factor = st.slider(
+                        "🧠 Overlap Assumption (Correlation Estimator)", 
+                        min_value=0.0, max_value=1.0, value=float(computed_overlap), step=0.05,
+                        help="1.0 assumes perfect correlation (Reach = Average Weight). 0.0 assumes people answer completely independently (Binomial Probability)."
+                    )
                     
-                    l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
-                    w_array = [weight_lookup.get(item, 0) for item in lasso_items]
-                    l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
-                    
-                    l_pct = (l_est_reach / safe_univ_tab3) * 100
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        bar_color = '#2e7d32' if l_pct <= 40 else '#c62828'
-                        st.markdown(f"""
-                            <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
-                                <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; margin-top: 5px;">
-                                <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Target Reach</span>
-                                <span style="color: #666">40% Recommendation Cap</span>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold or remove statements.")
+                l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
+                w_array = [weight_lookup.get(item, 0) for item in lasso_items]
+                l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
+                
+                l_pct = (l_est_reach / safe_univ_tab3) * 100
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    bar_color = '#2e7d32' if l_pct <= 40 else '#c62828'
+                    st.markdown(f"""
+                        <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
+                            <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+                            <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Target Reach</span>
+                            <span style="color: #666">40% Recommendation Cap</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold or remove statements.")
 
-                    with col2:
-                        st.markdown(f"**Exact Population Size:** {l_est_reach:,.0f} (000s)")
-                        st.markdown(f"*(Avg. Baseline for Reference: ~{(l_target_pop/safe_univ_tab3)*100:.1f}%)*")
+                with col2:
+                    st.markdown(f"**Exact Population Size:** {l_est_reach:,.0f} (000s)")
+                    st.markdown(f"*(Avg. Baseline for Reference: ~{(l_target_pop/safe_univ_tab3)*100:.1f}%)*")
 
-                    l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
-                    st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
-                    
-                    st.markdown("---")
-                    st.markdown("### 💾 Add to Mindset Deck")
-                    col_name, col_save = st.columns([3, 1])
-                    with col_name:
-                        ms_name = st.text_input("Name this Mindset:", value=f"Custom Audience {len(st.session_state.saved_mindsets) + 1}")
-                    with col_save:
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        if st.button("➕ Save Mindset", use_container_width=True):
-                            st.session_state.saved_mindsets.append({
-                                "name": ms_name,
-                                "items": lasso_items,
-                                "threshold": l_thresh,
-                                "pop": l_est_reach,
-                                "pct": l_pct,
-                                "code": l_code,
-                                "overlap": overlap_factor
-                            })
-                            st.success("Saved! Check your deck below.")
-                            st.rerun()
+                l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
+                st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
+                
+                st.markdown("---")
+                st.markdown("### 💾 Add to Mindset Deck")
+                col_name, col_save = st.columns([3, 1])
+                with col_name:
+                    ms_name = st.text_input("Name this Mindset:", value=f"Custom Audience {len(st.session_state.saved_mindsets) + 1}")
+                with col_save:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("➕ Save Mindset", use_container_width=True):
+                        st.session_state.saved_mindsets.append({
+                            "name": ms_name,
+                            "items": lasso_items,
+                            "threshold": l_thresh,
+                            "pop": l_est_reach,
+                            "pct": l_pct,
+                            "code": l_code,
+                            "overlap": overlap_factor
+                        })
+                        st.success("Saved! Check your deck below.")
+                        st.rerun()
 
     else:
         st.info("👈 Open the Map toolbar, select the 'Box Select' (bubble) icon, and draw around points to build a new mindset.")
