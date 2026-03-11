@@ -40,7 +40,8 @@ st.markdown("""
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; height: 100%; display: flex; align-items: center;}
-        .calibration-box { background-color: #e3f2fd; border: 1px solid #1976d2; padding: 10px; border-radius: 5px; color: #0d47a1; font-weight: bold; margin-bottom: 15px;}
+        .calibration-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-bottom: 15px;}
+        .error-box { background-color: #ffebee; border: 1px solid #f44336; padding: 15px; border-radius: 5px; color: #c62828; margin-bottom: 15px; font-weight: 600;}
         [data-testid="stMetricValue"] { font-size: 1.5rem !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -72,11 +73,13 @@ def clean_df(df_input, is_core=False):
     df = df_input.copy()
     label_col = df.columns[0]
     
-    if df[label_col].astype(str).str.contains('_Any Agree', na=False).any():
-        df = df[df[label_col].astype(str).str.contains('_Any Agree', na=False)]
-        df[label_col] = df[label_col].astype(str).str.replace('_Any Agree', '', regex=False).str.strip()
-        df[label_col] = df[label_col].astype(str).str.replace('"', '', regex=False)
+    df[label_col] = df[label_col].astype(str)
+    df[label_col] = df[label_col].str.replace('General Attitudes: ', '', case=False, regex=True)
+    df[label_col] = df[label_col].str.replace('_Any Agree', '', regex=False)
+    df[label_col] = df[label_col].str.replace('"', '', regex=False)
+    df[label_col] = df[label_col].str.strip()
     
+    df = df.loc[:, ~df.columns.duplicated()].copy()
     df = df.set_index(label_col)
     
     for col in df.columns:
@@ -302,7 +305,7 @@ with tab1:
 
         st.divider()
         st.header("🔗 Advanced Calibration")
-        st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab/Correlation Matrix to calculate hyper-accurate exact overlaps instead of mathematical estimates.</span>", unsafe_allow_html=True)
+        st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab/Correlation Matrix to activate strictly accurate population math in the Count Code Editor.</span>", unsafe_allow_html=True)
         corr_file = st.file_uploader("Upload Matrix File", type=["csv", "xlsx", "xls"], key="corr_upload")
         if corr_file:
             if process_correlation_matrix(corr_file):
@@ -330,7 +333,7 @@ with tab1:
 
         lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
-        lbl_passive = st.checkbox("Passive Labels", False)
+        lbl_passive = st.checkbox("Passive Labels", True)
         label_len = st.slider("Label Length (Words)", min_value=1, max_value=15, value=5, help="Shorten text on the map to reduce clutter. Hover over dots to see full text.")
         
         placeholder_filters = st.container()
@@ -525,16 +528,20 @@ with tab1:
             config={'displayModeBar': True, 'displaylogo': False}
         )
         
-        lasso_labels = []
+        lasso_raw = []
         if map_event and hasattr(map_event, 'selection') and map_event.selection.get("points"):
             for pt in map_event.selection["points"]:
-                if "customdata" in pt: lasso_labels.append(pt["customdata"])
-                elif "text" in pt: lasso_labels.append(pt["text"])
+                if "customdata" in pt: lasso_raw.append(pt["customdata"])
+                elif "text" in pt: lasso_raw.append(pt["text"])
             
             core_brands = set(st.session_state.df_brands['Label'])
-            lasso_labels = [lbl for lbl in lasso_labels if lbl not in core_brands]
+            l_core = []
             
-            st.session_state.lasso_labels = lasso_labels
+            for lbl in lasso_raw:
+                if lbl not in core_brands:
+                    l_core.append(lbl) 
+            
+            st.session_state.lasso_labels = l_core
         else:
             st.session_state.lasso_labels = []
 
@@ -585,7 +592,6 @@ with tab2:
                 
                 df_c = data_r.iloc[:, c_idx]; df_c.columns = h
                 
-                # --- POSITIONAL INDEX FIX TO PREVENT DATAFRAME ERROR ---
                 df_c.iloc[:, 0] = df_c.iloc[:, 0].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
                 
                 for i in range(1, len(df_c.columns)):
@@ -621,7 +627,6 @@ with tab2:
                 
                 df_c = data_r.iloc[:, c_idx]; df_c.columns = h
                 
-                # --- POSITIONAL INDEX FIX TO PREVENT DATAFRAME ERROR ---
                 df_c.iloc[:, 0] = df_c.iloc[:, 0].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
                 
                 new_cols = ['Attitude']
@@ -645,10 +650,10 @@ with tab2:
 
 with tab3:
     st.header("📟 Count Code Editor")
-    st.markdown("Use the Lasso tool on the Strategic Map to draw boundaries and build your custom audiences here.")
+    st.markdown("Build highly accurate, data-backed audience formulas using the map's Lasso tool.")
     
     if st.session_state.processed_data and not st.session_state.exact_universe_found:
-        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s) to calculate reach percentages.")
+        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s).")
 
     if not st.session_state.lasso_labels: 
         st.info("👈 Draw a Lasso on the map to start building your count code!")
@@ -662,8 +667,8 @@ with tab3:
 
         with st.container():
             st.markdown("""<div class="custom-mindset-card">
-                <h3 style="color: #4527a0; margin-top:0;">Custom Lasso Selection</h3>
-                <p>Fine-tune the traits and let the probability model estimate the final MRI reach.</p>
+                <h3 style="color: #4527a0; margin-top:0;">Custom Audience Formula</h3>
+                <p>Adjust the threshold logic below. To calculate the population size, a valid correlation matrix must be uploaded.</p>
             </div>""", unsafe_allow_html=True)
             
             lasso_key = "ms_items_lasso"
@@ -674,38 +679,12 @@ with tab3:
                 st.session_state['last_lasso_drawn'] = st.session_state.lasso_labels.copy()
             
             lasso_items = st.multiselect(
-                "Lassoed Attributes (Add or Remove manually if needed):", 
+                "Selected Statements (Add or Remove):", 
                 options=all_available_labels,
                 default=st.session_state[lasso_key],
                 key=lasso_key
             )
             
-            is_calibrated = False
-            computed_overlap = 0.75 
-            
-            if not st.session_state.corr_matrix.empty and lasso_items:
-                norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
-                valid_items = [i for i in norm_items if i in st.session_state.corr_matrix.index and i in st.session_state.corr_matrix.columns]
-                
-                if len(valid_items) > 1:
-                    sub_matrix = st.session_state.corr_matrix.loc[valid_items, valid_items]
-                    mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
-                    avg_matrix_val = sub_matrix.where(mask).mean().mean()
-                    
-                    if pd.notna(avg_matrix_val):
-                        computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
-                        is_calibrated = True
-
-            if is_calibrated:
-                st.markdown(f"<div class='calibration-box'>🧠 Powered by Uploaded MRI Matrix<br><span style='font-weight: normal'>The app has analyzed the background data and determined the exact average pairwise correlation of this specific count code is <b>{computed_overlap*100:.1f}%</b>.</span></div>", unsafe_allow_html=True)
-                overlap_factor = computed_overlap
-            else:
-                overlap_factor = st.slider(
-                    "🧠 Overlap Assumption (Correlation Estimator)", 
-                    min_value=0.0, max_value=1.0, value=0.75, step=0.05,
-                    help="1.0 assumes perfect correlation (Reach = Average Weight). 0.0 assumes people answer completely independently (Binomial Probability)."
-                )
-
             if lasso_items:
                 l_num_items = len(lasso_items)
                 l_min_majority = max(1, (l_num_items // 2) + 1)
@@ -714,35 +693,74 @@ with tab3:
                     st.session_state[th_lasso_key] = l_min_majority
 
                 l_thresh = st.slider(
-                    "Custom Threshold (Majority Rule Enforced):",
-                    min_value=l_min_majority, max_value=l_num_items,
+                    "Count Code Threshold (At least X out of Y):",
+                    min_value=1, max_value=l_num_items,
                     value=st.session_state[th_lasso_key],
                     key=th_lasso_key
                 )
-                
-                l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
-                w_array = [weight_lookup.get(item, 0) for item in lasso_items]
-                l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
-                
-                l_pct = (l_est_reach / safe_univ_tab3) * 100
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    bar_color = '#4527a0' if l_pct <= 40 else '#c62828'
-                    st.markdown(f"""
-                        <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
-                            <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; margin-top: 5px;">
-                            <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Reach</span>
-                            <span style="color: #666">40% Cap</span>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold or remove statements.")
 
-                with col2:
-                    st.markdown(f"**Population Estimate:** {l_est_reach:,.0f} (000s)")
-                    st.markdown(f"*(Lasso Target Average Reference: ~{(l_target_pop/safe_univ_tab3)*100:.1f}%)*")
+                # --- NEW STRICT ACCURACY VALIDATION ---
+                missing_items = []
+                norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
+                
+                if st.session_state.corr_matrix.empty:
+                    missing_items = lasso_items
+                else:
+                    for orig, norm in zip(lasso_items, norm_items):
+                        if norm not in st.session_state.corr_matrix.index or norm not in st.session_state.corr_matrix.columns:
+                            missing_items.append(orig)
 
-                l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
-                st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
+                if missing_items:
+                    st.markdown("<div class='error-box'>⚠️ <b>Calibration Required:</b> To ensure absolute MRI accuracy, the sizing engine requires real data. Please upload a comprehensive Correlation Matrix in the 'Advanced Calibration' sidebar that includes the following missing statements:</div>", unsafe_allow_html=True)
+                    for m in missing_items:
+                        st.markdown(f"- `{m}`")
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    # Output the code anyway so they can still use the builder
+                    l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
+                    st.markdown(f'<div class="logic-tag">MRI SYNTAX (Estimates Locked)</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
+
+                else:
+                    # EXACT CALCULATION
+                    valid_items = [i for i in norm_items if i in st.session_state.corr_matrix.index and i in st.session_state.corr_matrix.columns]
+                    
+                    computed_overlap = 0.0
+                    if len(valid_items) > 1:
+                        sub_matrix = st.session_state.corr_matrix.loc[valid_items, valid_items]
+                        mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
+                        avg_matrix_val = sub_matrix.where(mask).mean().mean()
+                        if pd.notna(avg_matrix_val):
+                            computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
+                    elif len(valid_items) == 1:
+                        computed_overlap = 1.0 
+                        
+                    st.markdown(f"<div class='calibration-box'>✅ <b>MRI Matrix Calibrated:</b> The exact average pairwise correlation of this custom audience is <b>{computed_overlap*100:.1f}%</b>.</div>", unsafe_allow_html=True)
+                    
+                    overlap_factor = computed_overlap
+                    
+                    l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
+                    w_array = [weight_lookup.get(item, 0) for item in lasso_items]
+                    l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
+                    
+                    l_pct = (l_est_reach / safe_univ_tab3) * 100
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        bar_color = '#2e7d32' if l_pct <= 40 else '#c62828'
+                        st.markdown(f"""
+                            <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
+                                <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+                                <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Target Reach</span>
+                                <span style="color: #666">40% Recommendation Cap</span>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold or remove statements.")
+
+                    with col2:
+                        st.markdown(f"**Exact Population Size:** {l_est_reach:,.0f} (000s)")
+                        st.markdown(f"*(Avg. Baseline for Reference: ~{(l_target_pop/safe_univ_tab3)*100:.1f}%)*")
+
+                    l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
+                    st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
