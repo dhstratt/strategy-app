@@ -123,8 +123,8 @@ def rotate_coords(df_to_rot, angle_deg):
 
 def process_correlation_matrix(uploaded_file):
     try:
-        uploaded_file.seek(0)
-        df_corr = pd.read_csv(uploaded_file, index_col=0) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file, index_col=0)
+        file_bytes = uploaded_file.getvalue()
+        df_corr = pd.read_csv(io.BytesIO(file_bytes), index_col=0) if uploaded_file.name.endswith('.csv') else pd.read_excel(io.BytesIO(file_bytes), index_col=0)
         df_corr.index = normalize_strings(df_corr.index)
         df_corr.columns = normalize_strings(df_corr.columns)
         for col in df_corr.columns:
@@ -198,9 +198,8 @@ def process_data(uploaded_file, passive_files, passive_configs):
                 common_b_count = sum(1 for x in p_cols_norm if x in col_mapper)
                 common_r_count = sum(1 for x in p_idx_norm if x in row_mapper)
                 
-                if cfg["mode"] == "Rows (Stars)": is_rows = True
-                elif cfg["mode"] == "Columns (Diamonds)": is_rows = False
-                else: is_rows = common_b_count >= common_r_count
+                # --- STRICTLY ROWS OR COLUMNS (NO AUTO) ---
+                is_rows = (cfg["mode"] == "Rows (Stars)")
                 
                 proj = np.array([]); p_aligned = pd.DataFrame()
                 status_msg = "❌ No Match"
@@ -286,7 +285,10 @@ with tab1:
                 with st.expander(f"{icon} {header_name}", expanded=False):
                     p_name = st.text_input("Layer Name", pf.name, key=f"n_{pf.name}")
                     p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
-                    p_mode = st.radio("Map As:", ["Auto", "Rows (Stars)", "Columns (Diamonds)"], key=f"mode_{pf.name}")
+                    
+                    # --- AUTO COMPLETELY REMOVED, ROWS DEFAULT ---
+                    p_mode = st.radio("Map As:", ["Rows (Stars)", "Columns (Diamonds)"], index=0, key=f"mode_{pf.name}")
+                    
                     if st.session_state.processed_data and i < len(st.session_state.passive_data):
                         st.caption(f"Status: {st.session_state.passive_data[i].get('Status', 'Pending')}")
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
@@ -372,7 +374,7 @@ with tab1:
                 if not layer.empty and layer['Visible'].iloc[0] and 'Label' in layer.columns:
                     with st.expander(f"🔍 Filter {layer['LayerName'].iloc[0]}", expanded=False):
                         l_opts = sorted(layer['Label'].unique())
-                        # STATE COLLISION FIX: We inject the Shape into the key so flipping Rows vs Columns spawns a fresh filter!
+                        # Unique dynamic key generated with layer shape so Streamlit doesn't collide memory caches!
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}_{layer['Shape'].iloc[0]}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
