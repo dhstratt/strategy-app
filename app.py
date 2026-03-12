@@ -58,6 +58,7 @@ if 'processed_data' not in st.session_state: st.session_state.processed_data = F
 if 'passive_data' not in st.session_state: st.session_state.passive_data = [] 
 if 'universe_size' not in st.session_state: st.session_state.universe_size = 258000.0
 if 'exact_universe_found' not in st.session_state: st.session_state.exact_universe_found = False
+# Internal state 'df_brands' kept for backward compatibility with older .use files, but functionally means 'df_cols'
 if 'df_brands' not in st.session_state: st.session_state.df_brands = pd.DataFrame()
 if 'df_attrs' not in st.session_state: st.session_state.df_attrs = pd.DataFrame()
 if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
@@ -328,9 +329,9 @@ with tab1:
 
         st.divider()
         st.header("🏷️ Map Controls")
-        f_brand = "None"
+        f_col_highlight = "None"
         if st.session_state.processed_data:
-            f_brand = st.selectbox("Highlight Column:", ["None"] + sorted(st.session_state.df_brands['Label'].tolist(), key=str.casefold))
+            f_col_highlight = st.selectbox("Highlight Column:", ["None"] + sorted(st.session_state.df_brands['Label'].tolist(), key=str.casefold))
 
         lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
@@ -405,7 +406,6 @@ with tab1:
                     st.markdown("<div class='error-box'>❌ <b>Matrix Required:</b> Upload a Master Matrix in the 'Advanced Calibration' sidebar to unlock the Auto-Generator.</div>", unsafe_allow_html=True)
                 else:
                     if st.button("⚡ Auto-Generate Deck", use_container_width=True):
-                        # Pre-check ALL pool items before running the generator
                         pool_labels = pool_df['Label'].unique().tolist()
                         norm_pool = [normalize_strings(pd.Series([item])).iloc[0] for item in pool_labels]
                         missing_from_matrix = [orig for orig, norm in zip(pool_labels, norm_pool) if norm not in st.session_state.corr_matrix.index or norm not in st.session_state.corr_matrix.columns]
@@ -515,31 +515,31 @@ with tab1:
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}_{layer['Shape'].iloc[0]}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Base Columns"))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#d62728'), name="Base Rows"))
         for l in df_p_list:
             if not l.empty:
                 fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#555', symbol=l['Shape'].iloc[0]), name=l['LayerName'].iloc[0]))
 
         def get_so(lbl, base_c):
-            if f_brand == "None": return (base_c, 0.9) 
-            return (base_c, 1.0) if (lbl == f_brand or lbl in hl) else ('#d3d3d3', 0.2)
+            if f_col_highlight == "None": return (base_c, 0.9) 
+            return (base_c, 1.0) if (lbl == f_col_highlight or lbl in hl) else ('#d3d3d3', 0.2)
 
         hl = []
-        if f_brand != "None":
-            hero = df_b[df_b['Label'] == f_brand].iloc[0]
+        if f_col_highlight != "None":
+            hero = df_b[df_b['Label'] == f_col_highlight].iloc[0]
             for d in [df_a] + df_p_list:
                 d['temp_d'] = np.sqrt((d['x']-hero['x'])**2 + (d['y']-hero['y'])**2)
                 hl += d.sort_values('temp_d').head(5)['Label'].tolist()
 
         ai_colors = px.colors.qualitative.Bold
 
-        def plot_layer(df_plot, shape, base_color, show_labels, size=10, is_brand=False):
+        def plot_layer(df_plot, shape, base_color, show_labels, size=10, is_base_col=False):
             if df_plot.empty: return
             if enable_clustering and 'Cluster' in df_plot.columns:
                 for cid in sorted(df_plot['Cluster'].unique()):
                     sub = df_plot[df_plot['Cluster'] == cid]
-                    bc = ai_colors[cid % 10] if not is_brand else '#1f77b4' 
+                    bc = ai_colors[cid % 10] if not is_base_col else '#1f77b4' 
                     res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
                     fig.add_trace(go.Scatter(
                         x=sub['x'], y=sub['y'], mode='markers',
@@ -549,9 +549,9 @@ with tab1:
                     if show_labels:
                         for _, r in sub.iterrows():
                             color, opac = get_so(r['Label'], bc)
-                            if opac > 0.3 or is_brand:
+                            if opac > 0.3 or is_base_col:
                                 short_lbl = truncate_label(r['Label'], label_len)
-                                fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10 if is_brand else 8, font=dict(color=bc, size=12 if is_brand else 10))
+                                fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10 if is_base_col else 8, font=dict(color=bc, size=12 if is_base_col else 10))
             else:
                 res = [get_so(r['Label'], base_color) for _, r in df_plot.iterrows()]
                 fig.add_trace(go.Scatter(
@@ -562,15 +562,15 @@ with tab1:
                 if show_labels:
                     for _, r in df_plot.iterrows():
                         color, opac = get_so(r['Label'], base_color)
-                        if opac > 0.3 or is_brand:
+                        if opac > 0.3 or is_base_col:
                             short_lbl = truncate_label(r['Label'], label_len)
-                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10 if is_brand else 8, font=dict(color=base_color, size=12 if is_brand else 10))
+                            fig.add_annotation(x=r['x'], y=r['y'], text=short_lbl, showarrow=False, yshift=10 if is_base_col else 8, font=dict(color=base_color, size=12 if is_base_col else 10))
 
-        if show_base_cols: plot_layer(df_b, 'circle', '#1f77b4', lbl_cols, size=14, is_brand=True)
-        if show_base_rows: plot_layer(df_a, 'circle', '#d62728', lbl_rows, size=10, is_brand=False)
+        if show_base_cols: plot_layer(df_b, 'circle', '#1f77b4', lbl_cols, size=14, is_base_col=True)
+        if show_base_rows: plot_layer(df_a, 'circle', '#d62728', lbl_rows, size=10, is_base_col=False)
         for i, layer in enumerate(df_p_list):
             if not layer.empty and layer['Visible'].iloc[0]:
-                plot_layer(layer, layer['Shape'].iloc[0], '#555', lbl_passive, size=12, is_brand=False)
+                plot_layer(layer, layer['Shape'].iloc[0], '#555', lbl_passive, size=12, is_base_col=False)
 
         fig.update_layout(
             template="plotly_white", height=map_height, margin=dict(l=0, r=0, t=30, b=0),
@@ -590,8 +590,8 @@ with tab1:
                 if "customdata" in pt: lasso_raw.append(pt["customdata"])
                 elif "text" in pt: lasso_raw.append(pt["text"])
             
-            core_brands = set(st.session_state.df_brands['Label'])
-            st.session_state.lasso_labels = [lbl for lbl in lasso_raw if lbl not in core_brands]
+            core_cols = set(st.session_state.df_brands['Label'])
+            st.session_state.lasso_labels = [lbl for lbl in lasso_raw if lbl not in core_cols]
         else:
             st.session_state.lasso_labels = []
 
@@ -612,8 +612,8 @@ with tab2:
     st.markdown("Use this tool to clean up messy MRI exports so they are perfectly formatted for the app.")
     
     cleaner_mode = st.radio("What type of data are you cleaning?", [
-        "Base Map Data (Brands x Attributes)", 
-        "Passive Layer Data (Brands x Demographics/Media)",
+        "Base Map Data (Columns x Rows)", 
+        "Passive Layer Data (Columns x Passives)",
         "Correlation Matrix (Square Crosstab for Calibration)"
     ])
     
@@ -623,15 +623,15 @@ with tab2:
         try:
             df_r = pd.read_csv(raw_mri, header=None) if raw_mri.name.endswith('.csv') else pd.read_excel(raw_mri, header=None)
             
-            if cleaner_mode == "Base Map Data (Brands x Attributes)" or cleaner_mode == "Passive Layer Data (Brands x Demographics/Media)":
+            if cleaner_mode == "Base Map Data (Columns x Rows)" or cleaner_mode == "Passive Layer Data (Columns x Passives)":
                 idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("Weighted \\(000\\)", regex=True).any())
-                brand_row = df_r.iloc[idx-1].tolist()
+                header_row = df_r.iloc[idx-1].tolist()
                 last_val = "Unknown"
-                for i in range(len(brand_row)):
-                    val = str(brand_row[i]).strip()
-                    if val == "" or val == "nan" or val == "None": brand_row[i] = last_val
+                for i in range(len(header_row)):
+                    val = str(header_row[i]).strip()
+                    if val == "" or val == "nan" or val == "None": header_row[i] = last_val
                     else: last_val = val
-                brand_r = pd.Series(brand_row)
+                header_r = pd.Series(header_row)
                 
                 metric_r = df_r.iloc[idx]
                 data_r = df_r.iloc[idx+1:].copy()
@@ -639,9 +639,9 @@ with tab2:
                 c_idx, h = [0], ['Attitude']
                 for c in range(1, len(metric_r)):
                     if "Weighted" in str(metric_r[c]):
-                        b_str = str(brand_r[c])
-                        if "Universe" not in b_str and "Total" not in b_str and b_str != 'nan': 
-                            c_idx.append(c); h.append(b_str)
+                        h_str = str(header_r[c])
+                        if "Universe" not in h_str and "Total" not in h_str and h_str != 'nan': 
+                            c_idx.append(c); h.append(h_str)
                 
                 df_c = data_r.iloc[:, c_idx]; df_c.columns = h
                 df_c.iloc[:, 0] = df_c.iloc[:, 0].astype(str).str.replace('General Attitudes: ', '', regex=False).str.replace('_Any Agree', '', regex=False).str.replace('"', '', regex=False).str.strip()
@@ -651,7 +651,7 @@ with tab2:
                 df_c = df_c.loc[:, ~df_c.columns.duplicated()]
                 df_c = df_c.dropna(subset=df_c.columns[1:], how='all').fillna(0)
                 
-                if cleaner_mode == "Base Map Data (Brands x Attributes)":
+                if cleaner_mode == "Base Map Data (Columns x Rows)":
                     st.success("✅ Base Map Data Cleaned!")
                     st.download_button("Download Cleaned Base Data", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Base_Data.csv")
                 else:
@@ -735,13 +735,11 @@ with tab3:
 
                 norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
                 missing_items = []
-                
                 if not st.session_state.corr_matrix.empty:
                     for orig, norm in zip(lasso_items, norm_items):
                         if norm not in st.session_state.corr_matrix.index or norm not in st.session_state.corr_matrix.columns:
                             missing_items.append(orig)
-                else:
-                    missing_items = lasso_items
+                else: missing_items = lasso_items
                 
                 is_calibrated = False
                 computed_overlap = 0.0 
@@ -757,7 +755,6 @@ with tab3:
                     elif len(valid_norms) == 1: 
                         computed_overlap = 1.0
 
-                # --- STRICT SIZING ENFORCEMENT ---
                 if is_calibrated:
                     st.markdown(f"<div class='calibration-box'>✅ <b>MRI Matrix Calibrated:</b> The exact average pairwise correlation of this custom audience is <b>{computed_overlap*100:.1f}%</b>.</div>", unsafe_allow_html=True)
                     
