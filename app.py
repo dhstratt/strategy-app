@@ -8,13 +8,20 @@ import pickle
 import re
 import math 
 
-# --- SAFE IMPORT ---
+# --- SAFE IMPORTS FOR MATH & MEANING ---
 try:
     from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_score
+    from sklearn.preprocessing import StandardScaler
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
+
+try:
+    from sentence_transformers import SentenceTransformer
+    HAS_NLP = True
+except ImportError:
+    HAS_NLP = False
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="The Consumer Landscape")
@@ -36,10 +43,9 @@ st.markdown("""
             background-color: #f3e5f5; margin-bottom: 25px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
-        .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
-        .size-badge-custom { float: right; background: #4527a0; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
+        .passive-tag { background: #e3f2fd; border: 1px solid #90caf9; color: #1565c0; padding: 4px 12px; border-radius: 15px; font-size: 0.85em; font-weight: 800; margin-right: 5px; margin-bottom: 5px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; height: 100%; display: flex; align-items: center;}
         .calibration-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-bottom: 15px;}
         .error-box { background-color: #ffebee; border: 1px solid #f44336; padding: 15px; border-radius: 5px; color: #c62828; margin-bottom: 15px; font-weight: 600;}
@@ -61,6 +67,14 @@ if 'corr_matrix' not in st.session_state: st.session_state.corr_matrix = pd.Data
 if 'saved_mindsets' not in st.session_state: st.session_state.saved_mindsets = []
 
 # --- HELPERS ---
+@st.cache_resource(show_spinner="Loading Semantic NLP Engine (first time only)...")
+def load_nlp_model():
+    if HAS_NLP:
+        return SentenceTransformer('all-MiniLM-L6-v2')
+    return None
+
+nlp_model = load_nlp_model()
+
 def normalize_strings(s_index):
     return s_index.astype(str).str.lower().str.replace(r'[^\w\s]', '', regex=True).str.strip()
 
@@ -197,7 +211,6 @@ def process_data(uploaded_file, passive_files, passive_configs):
                 
                 p_cols_norm = normalize_strings(p_c.columns)
                 p_idx_norm = normalize_strings(p_c.index)
-                
                 common_b_count = sum(1 for x in p_cols_norm if x in col_mapper)
                 common_r_count = sum(1 for x in p_idx_norm if x in row_mapper)
                 
@@ -245,7 +258,7 @@ with tab1:
     st.title("🗺️ The Consumer Landscape")
     
     if st.session_state.processed_data and not st.session_state.exact_universe_found:
-        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s) to calculate reach percentages.")
+        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s).")
         
     with st.sidebar:
         st.header("📂 Data & Projects")
@@ -296,10 +309,10 @@ with tab1:
 
         st.divider()
         st.header("🔗 Advanced Calibration")
-        st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab/Correlation Matrix to activate strictly accurate population math in the Count Code Editor.</span>", unsafe_allow_html=True)
+        st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab Matrix to activate strictly accurate population math.</span>", unsafe_allow_html=True)
         corr_file = st.file_uploader("Upload Matrix File", type=["csv", "xlsx", "xls"], key="corr_upload")
         if corr_file:
-            if process_correlation_matrix(corr_file): st.success("✅ Matrix Calibrated Successfully.")
+            if process_correlation_matrix(corr_file): st.success("✅ Matrix Calibrated.")
 
         if st.session_state.processed_data:
             st.divider()
@@ -322,122 +335,146 @@ with tab1:
         lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
         lbl_passive = st.checkbox("Passive Labels", True)
-        label_len = st.slider("Label Length (Words)", 1, 15, 5, help="Shorten text on the map to reduce clutter. Hover over dots to see full text.")
+        label_len = st.slider("Label Length (Words)", 1, 15, 5)
         
         placeholder_filters = st.container()
 
         st.divider()
-        st.header("⚗️ AI Recommendations")
-        enable_clustering = st.checkbox("Show Suggested Clusters (AI Boss)", False) 
+        st.header("⚗️ AI Boss Generator")
+        enable_clustering = st.checkbox("Turn on AI Generator", False) 
         
-        num_clusters = 4
-        if enable_clustering and HAS_SKLEARN and st.session_state.processed_data:
-            df_a_raw = st.session_state.df_attrs
-            p_source_raw = st.session_state.passive_data if 'passive_data' in st.session_state else []
-            dfs_to_cluster_raw = [df_a_raw[['x', 'y']]]
-            for l in p_source_raw:
-                if isinstance(l, pd.DataFrame) and not l.empty and 'x' in l.columns:
-                    dfs_to_cluster_raw.append(l[['x', 'y']])
-            pool_raw = pd.concat(dfs_to_cluster_raw)
-
-            best_k = 4
-            if len(pool_raw) > 3:
-                best_score = -1
-                max_test_k = min(8, len(pool_raw) - 1)
-                for k in range(2, max_test_k + 1):
-                    km_test = KMeans(n_clusters=k, random_state=42, n_init=10).fit(pool_raw)
-                    score = silhouette_score(pool_raw, km_test.labels_)
-                    if score > best_score:
-                        best_score = score
-                        best_k = k
-                st.markdown(f"<div style='background:#e3f2fd; padding:10px; border-radius:5px; color:#0d47a1; margin-bottom:10px; font-size:0.9em;'>📈 <b>Statistical Insight:</b> The optimal number of mindsets for this landscape is <b>{best_k}</b>.</div>", unsafe_allow_html=True)
+        # --- NEW: QUALITATIVE AI BLEND UI ---
+        use_nlp = False
+        math_weight = 1.0
+        nlp_weight = 0.0
+        
+        if enable_clustering:
+            if HAS_NLP:
+                use_nlp = st.checkbox("🧠 Enable Qualitative AI (Semantic Meaning)", False, help="If activated, the AI will read the text to find conceptually related statements, even if they aren't right next to each other on the map.")
+                if use_nlp:
+                    blend_val = st.slider("Balancing Tool", min_value=0, max_value=100, value=50, step=5, format="%d%%", help="0% = Pure Map Math. 100% = Pure Text Meaning. 50% = Perfect Blend.")
+                    st.caption("👈 Pure Math ——— Pure Meaning 👉")
+                    nlp_weight = blend_val / 100.0
+                    math_weight = 1.0 - nlp_weight
             else:
-                best_k = 2
-
-            num_clusters = st.slider("Suggested # of Mindsets", 2, 8, int(best_k))
-
-            # --- UPDATED AI AUTO-GENERATOR WITH TRUE GOLDILOCKS SIZING ---
-            if st.button("⚡ Auto-Generate Deck", help="Instantly build optimal formulas for all clusters and save to Tab 3."):
-                km_final = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool_raw)
+                st.markdown("<div class='error-box'>⚠️ <b>Qualitative AI Offline:</b> To group statements by their semantic meaning, run <code>pip install sentence-transformers</code> in your terminal.</div>", unsafe_allow_html=True)
+            
+            num_clusters = 4
+            
+            if HAS_SKLEARN and st.session_state.processed_data:
+                df_a_raw = st.session_state.df_attrs
+                p_source_raw = st.session_state.passive_data if 'passive_data' in st.session_state else []
                 
-                temp_a = df_a_raw.copy()
-                temp_a['Cluster'] = km_final.predict(temp_a[['x', 'y']])
-                
-                temp_p_list = []
+                # Build master pool for clustering
+                pool_df = pd.DataFrame()
+                frames = [df_a_raw[['Label', 'x', 'y']]]
                 for l in p_source_raw:
                     if isinstance(l, pd.DataFrame) and not l.empty and 'x' in l.columns:
-                        tl = l.copy()
-                        tl['Cluster'] = km_final.predict(tl[['x', 'y']])
-                        temp_p_list.append(tl)
+                        frames.append(l[['Label', 'x', 'y']])
+                pool_df = pd.concat(frames).reset_index(drop=True)
+                
+                # --- THE MATH + MEANING ENGINE ---
+                scaler = StandardScaler()
+                spatial_coords = scaler.fit_transform(pool_df[['x', 'y']])
+                
+                if use_nlp and nlp_model:
+                    text_embeddings = nlp_model.encode(pool_df['Label'].tolist())
+                    semantic_coords = scaler.fit_transform(text_embeddings)
+                    # Blend them mathematically
+                    final_matrix = (spatial_coords * math_weight) + (semantic_coords * nlp_weight)
+                else:
+                    final_matrix = spatial_coords
 
-                wl = get_weight_lookup()
-                su = get_safe_universe()
+                # Find optimal K
+                best_k = 4
+                if len(final_matrix) > 3:
+                    best_score = -1
+                    max_test_k = min(8, len(final_matrix) - 1)
+                    for k in range(2, max_test_k + 1):
+                        km_test = KMeans(n_clusters=k, random_state=42, n_init=10).fit(final_matrix)
+                        score = silhouette_score(final_matrix, km_test.labels_)
+                        if score > best_score:
+                            best_score = score
+                            best_k = k
+                    st.markdown(f"<div style='background:#e3f2fd; padding:10px; border-radius:5px; color:#0d47a1; margin-bottom:10px; font-size:0.9em;'>📈 <b>Statistical Insight:</b> The optimal number of mindsets is <b>{best_k}</b>.</div>", unsafe_allow_html=True)
+                else:
+                    best_k = 2
 
-                for cid in range(num_clusters):
-                    c_core = temp_a[temp_a['Cluster'] == cid]['Label'].tolist()
-                    c_pass = []
-                    for tl in temp_p_list:
-                        c_pass.extend(tl[tl['Cluster'] == cid]['Label'].tolist())
+                num_clusters = st.slider("Suggested # of Mindsets", 2, 8, int(best_k))
 
-                    # Combine all active and passive layers for mathematical generation
-                    c_all = c_core + c_pass
-                    if len(c_all) == 0: continue
-
-                    norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in c_all]
-                    computed_overlap = 0.75
-                    if not st.session_state.corr_matrix.empty:
-                        valid_norms = [n for n in norm_items if n in st.session_state.corr_matrix.index and n in st.session_state.corr_matrix.columns]
-                        if len(valid_norms) > 1:
-                            sub_matrix = st.session_state.corr_matrix.loc[valid_norms, valid_norms]
-                            mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
-                            avg_matrix_val = sub_matrix.where(mask).mean().mean()
-                            if pd.notna(avg_matrix_val): computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
-                        elif len(valid_norms) == 1:
-                            computed_overlap = 1.0
-
-                    l_num_items = len(c_all)
-                    l_min_majority = max(1, (l_num_items // 2) + 1)
-                    w_array = [wl.get(item, 0) for item in c_all]
+                # --- AUTO-GENERATE PIPELINE ---
+                if st.button("⚡ Auto-Generate Deck", use_container_width=True):
+                    km_final = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(final_matrix)
                     
-                    # True Goldilocks Target: Mathematical Mean of specific inputs
-                    target_avg_reach = np.mean(w_array) if w_array else 0
-                    target_avg_pct = (target_avg_reach / su) * 100 if su > 0 else 0
+                    # Create mapping dictionary
+                    cluster_map = dict(zip(pool_df['Label'], km_final.labels_))
+                    
+                    # Apply to Dataframes
+                    st.session_state.df_attrs['Cluster'] = st.session_state.df_attrs['Label'].map(cluster_map)
+                    # For brands, we just default them to 0 or map them via proximity later. For now, assign to 0.
+                    st.session_state.df_brands['Cluster'] = 0
+                    
+                    for idx in range(len(st.session_state.passive_data)):
+                        if not st.session_state.passive_data[idx].empty:
+                            st.session_state.passive_data[idx]['Cluster'] = st.session_state.passive_data[idx]['Label'].map(cluster_map)
 
-                    best_thresh = l_min_majority
-                    best_diff = float('inf')
-                    best_reach = 0
+                    wl = get_weight_lookup()
+                    su = get_safe_universe()
 
-                    # Find threshold closest to true mean target
-                    for t in range(l_min_majority, l_num_items + 1):
-                        reach = calculate_clustered_reach(w_array, t, su, computed_overlap)
-                        diff = abs(reach - target_avg_reach) 
-                        if diff < best_diff:
-                            best_diff = diff
-                            best_thresh = t
-                            best_reach = reach
+                    for cid in range(num_clusters):
+                        c_all = [label for label, clus in cluster_map.items() if clus == cid]
+                        if len(c_all) == 0: continue
 
-                    best_pct = (best_reach / su) * 100 if su > 0 else 0
-                    code = "(" + " + ".join([f"[{r}]" for r in c_all]) + f") >= {best_thresh}"
+                        norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in c_all]
+                        computed_overlap = 0.75
+                        if not st.session_state.corr_matrix.empty:
+                            valid_norms = [n for n in norm_items if n in st.session_state.corr_matrix.index and n in st.session_state.corr_matrix.columns]
+                            if len(valid_norms) > 1:
+                                sub_matrix = st.session_state.corr_matrix.loc[valid_norms, valid_norms]
+                                mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
+                                avg_matrix_val = sub_matrix.where(mask).mean().mean()
+                                if pd.notna(avg_matrix_val): computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
+                            elif len(valid_norms) == 1:
+                                computed_overlap = 1.0
 
-                    st.session_state.saved_mindsets.append({
-                        "name": f"Auto Segment {cid + 1}",
-                        "items": c_all,
-                        "threshold": best_thresh,
-                        "pop": best_reach,
-                        "pct": best_pct,
-                        "target_avg_pct": target_avg_pct,
-                        "code": code,
-                        "overlap": computed_overlap
-                    })
-                st.success("✅ Deck Auto-Generated! Scroll to Tab 3 to view.")
+                        l_num_items = len(c_all)
+                        l_min_majority = max(1, (l_num_items // 2) + 1)
+                        w_array = [wl.get(item, 0) for item in c_all]
+                        
+                        target_avg_reach = np.mean(w_array) if w_array else 0
+                        target_avg_pct = (target_avg_reach / su) * 100 if su > 0 else 0
 
-        elif enable_clustering and not HAS_SKLEARN:
-            st.error("Scikit-learn library is required for AI clustering.")
+                        best_thresh = l_min_majority
+                        best_diff = float('inf')
+                        best_reach = 0
+
+                        for t in range(l_min_majority, l_num_items + 1):
+                            reach = calculate_clustered_reach(w_array, t, su, computed_overlap)
+                            diff = abs(reach - target_avg_reach) 
+                            if diff < best_diff:
+                                best_diff = diff
+                                best_thresh = t
+                                best_reach = reach
+
+                        best_pct = (best_reach / su) * 100 if su > 0 else 0
+                        code = "(" + " + ".join([f"[{r}]" for r in c_all]) + f") >= {best_thresh}"
+
+                        st.session_state.saved_mindsets.append({
+                            "name": f"Auto Segment {cid + 1}",
+                            "items": c_all,
+                            "threshold": best_thresh,
+                            "pop": best_reach,
+                            "pct": best_pct,
+                            "target_avg_pct": target_avg_pct,
+                            "code": code,
+                            "overlap": computed_overlap
+                        })
+                    st.success("✅ Deck Auto-Generated! Scroll to Tab 3 to view.")
 
         st.divider()
         st.header("🔄 View Settings")
         map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
-        map_height = st.slider("Map Height (Fit to screen)", 500, 1200, 650, step=50, help="Adjust this so the entire map fits on your screen without scrolling. This keeps the Box tool always visible!")
+        map_height = st.slider("Map Height (Fit to screen)", 500, 1200, 650, step=50)
 
     # --- RENDER ---
     if st.session_state.processed_data:
@@ -449,15 +486,14 @@ with tab1:
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
         df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source if isinstance(l, pd.DataFrame) and 'x' in l.columns]
         
-        if enable_clustering and HAS_SKLEARN:
-            dfs_to_cluster = [df_a[['x', 'y']]] + [l[['x', 'y']] for l in df_p_list if not l.empty]
-            pool = pd.concat(dfs_to_cluster)
-            kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool)
-            df_a['Cluster'] = kmeans.predict(df_a[['x', 'y']])
-            df_b['Cluster'] = kmeans.predict(df_b[['x', 'y']]) 
-            for l in df_p_list:
-                if not l.empty: l['Cluster'] = kmeans.predict(l[['x', 'y']])
-        else:
+        # If AI is active but they didn't click auto-generate, we need to map colors live
+        if enable_clustering and HAS_SKLEARN and 'Cluster' not in df_a.columns:
+             # Just safety fallback if they didn't click the button yet
+             df_a['Cluster'] = 0
+             df_b['Cluster'] = 0
+             for l in df_p_list:
+                if not l.empty: l['Cluster'] = 0
+        elif not enable_clustering:
             df_a['Cluster'] = 0; df_b['Cluster'] = 0
             for l in df_p_list:
                 if not l.empty: l['Cluster'] = 0
@@ -499,10 +535,10 @@ with tab1:
 
         def plot_layer(df_plot, shape, base_color, show_labels, size=10, is_brand=False):
             if df_plot.empty: return
-            if enable_clustering:
+            if enable_clustering and 'Cluster' in df_plot.columns:
                 for cid in sorted(df_plot['Cluster'].unique()):
                     sub = df_plot[df_plot['Cluster'] == cid]
-                    bc = ai_colors[cid % 10]
+                    bc = ai_colors[cid % 10] if not is_brand else '#1f77b4' # Keep brands blue
                     res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
                     fig.add_trace(go.Scatter(
                         x=sub['x'], y=sub['y'], mode='markers',
@@ -561,7 +597,7 @@ with tab1:
         if st.session_state.lasso_labels:
             col_msg, col_btn = st.columns([4, 1])
             with col_msg:
-                st.markdown(f'<div class="success-box">✅ You bubbled {len(st.session_state.lasso_labels)} statements! Edit them in the Count Code Editor tab. (Select the "Pan" hand tool to move the map).</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="success-box">✅ You bubbled {len(st.session_state.lasso_labels)} statements! Edit them in the Count Code Editor tab.</div>', unsafe_allow_html=True)
             with col_btn:
                 if st.button("🗑️ Clear Bubble/Selection", use_container_width=True):
                     st.session_state.lasso_labels = []
@@ -588,7 +624,6 @@ with tab2:
             
             if cleaner_mode == "Base Map Data (Brands x Attributes)" or cleaner_mode == "Passive Layer Data (Brands x Demographics/Media)":
                 idx = next(i for i, row in df_r.iterrows() if row.astype(str).str.contains("Weighted \\(000\\)", regex=True).any())
-                
                 brand_row = df_r.iloc[idx-1].tolist()
                 last_val = "Unknown"
                 for i in range(len(brand_row)):
@@ -660,14 +695,13 @@ with tab2:
                 
                 st.success("✅ Correlation Matrix Cleaned and Formatted!")
                 st.download_button("Download Cleaned Matrix", df_c.to_csv(index=False).encode('utf-8'), "Cleaned_Correlation_Matrix.csv")
-
         except Exception as e:
             st.error(f"Format error: {e}")
 
 with tab3:
     st.header("📟 Count Code Editor")
     if st.session_state.processed_data and not st.session_state.exact_universe_found:
-        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s) to calculate reach percentages.")
+        st.warning("⚠️ **Warning:** A 'Study Universe' or 'Total Population' row was not found in your base data. The app is using a default estimate of 258,000 (000s).")
 
     if st.session_state.lasso_labels:
         safe_univ_tab3 = get_safe_universe()
@@ -700,13 +734,11 @@ with tab3:
 
                 norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
                 missing_items = []
-                
                 if not st.session_state.corr_matrix.empty:
                     for orig, norm in zip(lasso_items, norm_items):
                         if norm not in st.session_state.corr_matrix.index or norm not in st.session_state.corr_matrix.columns:
                             missing_items.append(orig)
-                else:
-                    missing_items = lasso_items
+                else: missing_items = lasso_items
                 
                 is_calibrated = False
                 computed_overlap = 0.75 
@@ -718,21 +750,16 @@ with tab3:
                         mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
                         avg_matrix_val = sub_matrix.where(mask).mean().mean()
                         if pd.notna(avg_matrix_val): computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
-                    elif len(valid_norms) == 1:
-                        computed_overlap = 1.0
+                    elif len(valid_norms) == 1: computed_overlap = 1.0
                 
-                if not st.session_state.corr_matrix.empty and len(missing_items) == 0:
-                    is_calibrated = True
+                if not st.session_state.corr_matrix.empty and len(missing_items) == 0: is_calibrated = True
 
                 if is_calibrated:
                     st.markdown(f"<div class='calibration-box'>✅ <b>MRI Matrix Calibrated:</b> The exact average pairwise correlation of this custom audience is <b>{computed_overlap*100:.1f}%</b>.</div>", unsafe_allow_html=True)
                     overlap_factor = computed_overlap
                 else:
-                    if st.session_state.corr_matrix.empty:
-                        st.info("💡 Upload a Correlation Matrix in the sidebar to automate strict math matching. Using manual Overlap Estimator below.")
-                    else:
-                        st.markdown(f"<div class='error-box'>⚠️ <b>Partial Calibration:</b> The following items are missing from your uploaded matrix: <br> `{', '.join(missing_items)}` <br><br> We are suggesting a baseline overlap below, but you can manually adjust the estimation probability.</div>", unsafe_allow_html=True)
-                        
+                    if st.session_state.corr_matrix.empty: st.info("💡 Upload a Correlation Matrix in the sidebar to automate strict math matching.")
+                    else: st.markdown(f"<div class='error-box'>⚠️ <b>Partial Calibration:</b> Missing `{', '.join(missing_items)}`. Adjust baseline below.</div>", unsafe_allow_html=True)
                     overlap_factor = st.slider("🧠 Overlap Assumption (Correlation Estimator)", min_value=0.0, max_value=1.0, value=float(computed_overlap), step=0.05)
                     
                 w_array = [weight_lookup.get(item, 0) for item in lasso_items]
