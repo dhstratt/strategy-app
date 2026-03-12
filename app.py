@@ -43,6 +43,8 @@ st.markdown("""
             background-color: #f3e5f5; margin-bottom: 25px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
+        .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
+        .size-badge-custom { float: right; background: #4527a0; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .passive-tag { background: #e3f2fd; border: 1px solid #90caf9; color: #1565c0; padding: 4px 12px; border-radius: 15px; font-size: 0.85em; font-weight: 800; margin-right: 5px; margin-bottom: 5px; display: inline-block; }
@@ -309,7 +311,7 @@ with tab1:
 
         st.divider()
         st.header("🔗 Advanced Calibration")
-        st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab Matrix to activate strictly accurate population math.</span>", unsafe_allow_html=True)
+        st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab/Correlation Matrix to activate strictly accurate population math.</span>", unsafe_allow_html=True)
         corr_file = st.file_uploader("Upload Matrix File", type=["csv", "xlsx", "xls"], key="corr_upload")
         if corr_file:
             if process_correlation_matrix(corr_file): st.success("✅ Matrix Calibrated.")
@@ -343,7 +345,6 @@ with tab1:
         st.header("⚗️ AI Boss Generator")
         enable_clustering = st.checkbox("Turn on AI Generator", False) 
         
-        # --- NEW: QUALITATIVE AI BLEND UI ---
         use_nlp = False
         math_weight = 1.0
         nlp_weight = 0.0
@@ -373,15 +374,18 @@ with tab1:
                         frames.append(l[['Label', 'x', 'y']])
                 pool_df = pd.concat(frames).reset_index(drop=True)
                 
-                # --- THE MATH + MEANING ENGINE ---
                 scaler = StandardScaler()
                 spatial_coords = scaler.fit_transform(pool_df[['x', 'y']])
                 
                 if use_nlp and nlp_model:
                     text_embeddings = nlp_model.encode(pool_df['Label'].tolist())
                     semantic_coords = scaler.fit_transform(text_embeddings)
-                    # Blend them mathematically
-                    final_matrix = (spatial_coords * math_weight) + (semantic_coords * nlp_weight)
+                    
+                    # --- BUG FIX: NORMALIZE DIMENSIONS BEFORE HORIZONTAL STACKING ---
+                    spatial_scaled = spatial_coords / np.sqrt(2)
+                    semantic_scaled = semantic_coords / np.sqrt(text_embeddings.shape[1])
+                    
+                    final_matrix = np.hstack((spatial_scaled * math_weight, semantic_scaled * nlp_weight))
                 else:
                     final_matrix = spatial_coords
 
@@ -402,16 +406,12 @@ with tab1:
 
                 num_clusters = st.slider("Suggested # of Mindsets", 2, 8, int(best_k))
 
-                # --- AUTO-GENERATE PIPELINE ---
                 if st.button("⚡ Auto-Generate Deck", use_container_width=True):
                     km_final = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(final_matrix)
                     
-                    # Create mapping dictionary
                     cluster_map = dict(zip(pool_df['Label'], km_final.labels_))
                     
-                    # Apply to Dataframes
                     st.session_state.df_attrs['Cluster'] = st.session_state.df_attrs['Label'].map(cluster_map)
-                    # For brands, we just default them to 0 or map them via proximity later. For now, assign to 0.
                     st.session_state.df_brands['Cluster'] = 0
                     
                     for idx in range(len(st.session_state.passive_data)):
@@ -486,9 +486,7 @@ with tab1:
         p_source = st.session_state.passive_data if 'passive_data' in st.session_state else []
         df_p_list = [rotate_coords(l.copy(), map_rotation) for l in p_source if isinstance(l, pd.DataFrame) and 'x' in l.columns]
         
-        # If AI is active but they didn't click auto-generate, we need to map colors live
         if enable_clustering and HAS_SKLEARN and 'Cluster' not in df_a.columns:
-             # Just safety fallback if they didn't click the button yet
              df_a['Cluster'] = 0
              df_b['Cluster'] = 0
              for l in df_p_list:
@@ -538,7 +536,7 @@ with tab1:
             if enable_clustering and 'Cluster' in df_plot.columns:
                 for cid in sorted(df_plot['Cluster'].unique()):
                     sub = df_plot[df_plot['Cluster'] == cid]
-                    bc = ai_colors[cid % 10] if not is_brand else '#1f77b4' # Keep brands blue
+                    bc = ai_colors[cid % 10] if not is_brand else '#1f77b4' 
                     res = [get_so(r['Label'], bc) for _, r in sub.iterrows()]
                     fig.add_trace(go.Scatter(
                         x=sub['x'], y=sub['y'], mode='markers',
