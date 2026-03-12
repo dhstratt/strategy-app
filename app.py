@@ -43,8 +43,6 @@ st.markdown("""
             background-color: #f3e5f5; margin-bottom: 25px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
-        .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
-        .size-badge-custom { float: right; background: #4527a0; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .passive-tag { background: #e3f2fd; border: 1px solid #90caf9; color: #1565c0; padding: 4px 12px; border-radius: 15px; font-size: 0.85em; font-weight: 800; margin-right: 5px; margin-bottom: 5px; display: inline-block; }
@@ -311,8 +309,8 @@ with tab1:
 
         st.divider()
         st.header("🔗 Advanced Calibration")
-        st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload an MRI Cross-Tab/Correlation Matrix to activate strictly accurate population math.</span>", unsafe_allow_html=True)
-        corr_file = st.file_uploader("Upload Matrix File", type=["csv", "xlsx", "xls"], key="corr_upload")
+        st.markdown("<span style='font-size: 0.85em; color: #555;'>Upload a Master MRI Cross-Tab Matrix to unlock automated population sizing.</span>", unsafe_allow_html=True)
+        corr_file = st.file_uploader("Upload Master Matrix File", type=["csv", "xlsx", "xls"], key="corr_upload")
         if corr_file:
             if process_correlation_matrix(corr_file): st.success("✅ Matrix Calibrated.")
 
@@ -366,7 +364,6 @@ with tab1:
                 df_a_raw = st.session_state.df_attrs
                 p_source_raw = st.session_state.passive_data if 'passive_data' in st.session_state else []
                 
-                # Build master pool for clustering
                 pool_df = pd.DataFrame()
                 frames = [df_a_raw[['Label', 'x', 'y']]]
                 for l in p_source_raw:
@@ -381,15 +378,12 @@ with tab1:
                     text_embeddings = nlp_model.encode(pool_df['Label'].tolist())
                     semantic_coords = scaler.fit_transform(text_embeddings)
                     
-                    # --- BUG FIX: NORMALIZE DIMENSIONS BEFORE HORIZONTAL STACKING ---
                     spatial_scaled = spatial_coords / np.sqrt(2)
                     semantic_scaled = semantic_coords / np.sqrt(text_embeddings.shape[1])
-                    
                     final_matrix = np.hstack((spatial_scaled * math_weight, semantic_scaled * nlp_weight))
                 else:
                     final_matrix = spatial_coords
 
-                # Find optimal K
                 best_k = 4
                 if len(final_matrix) > 3:
                     best_score = -1
@@ -406,70 +400,79 @@ with tab1:
 
                 num_clusters = st.slider("Suggested # of Mindsets", 2, 8, int(best_k))
 
-                if st.button("⚡ Auto-Generate Deck", use_container_width=True):
-                    km_final = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(final_matrix)
-                    
-                    cluster_map = dict(zip(pool_df['Label'], km_final.labels_))
-                    
-                    st.session_state.df_attrs['Cluster'] = st.session_state.df_attrs['Label'].map(cluster_map)
-                    st.session_state.df_brands['Cluster'] = 0
-                    
-                    for idx in range(len(st.session_state.passive_data)):
-                        if not st.session_state.passive_data[idx].empty:
-                            st.session_state.passive_data[idx]['Cluster'] = st.session_state.passive_data[idx]['Label'].map(cluster_map)
-
-                    wl = get_weight_lookup()
-                    su = get_safe_universe()
-
-                    for cid in range(num_clusters):
-                        c_all = [label for label, clus in cluster_map.items() if clus == cid]
-                        if len(c_all) == 0: continue
-
-                        norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in c_all]
-                        computed_overlap = 0.75
-                        if not st.session_state.corr_matrix.empty:
-                            valid_norms = [n for n in norm_items if n in st.session_state.corr_matrix.index and n in st.session_state.corr_matrix.columns]
-                            if len(valid_norms) > 1:
-                                sub_matrix = st.session_state.corr_matrix.loc[valid_norms, valid_norms]
-                                mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
-                                avg_matrix_val = sub_matrix.where(mask).mean().mean()
-                                if pd.notna(avg_matrix_val): computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
-                            elif len(valid_norms) == 1:
-                                computed_overlap = 1.0
-
-                        l_num_items = len(c_all)
-                        l_min_majority = max(1, (l_num_items // 2) + 1)
-                        w_array = [wl.get(item, 0) for item in c_all]
+                # --- STRICT AUTO-GENERATE ENFORCEMENT ---
+                if st.session_state.corr_matrix.empty:
+                    st.markdown("<div class='error-box'>❌ <b>Matrix Required:</b> Upload a Master Matrix in the 'Advanced Calibration' sidebar to unlock the Auto-Generator.</div>", unsafe_allow_html=True)
+                else:
+                    if st.button("⚡ Auto-Generate Deck", use_container_width=True):
+                        # Pre-check ALL pool items before running the generator
+                        pool_labels = pool_df['Label'].unique().tolist()
+                        norm_pool = [normalize_strings(pd.Series([item])).iloc[0] for item in pool_labels]
+                        missing_from_matrix = [orig for orig, norm in zip(pool_labels, norm_pool) if norm not in st.session_state.corr_matrix.index or norm not in st.session_state.corr_matrix.columns]
                         
-                        target_avg_reach = np.mean(w_array) if w_array else 0
-                        target_avg_pct = (target_avg_reach / su) * 100 if su > 0 else 0
+                        if missing_from_matrix:
+                            st.error(f"❌ Auto-Generate Aborted: Your uploaded matrix is missing the following items: {', '.join(missing_from_matrix[:5])}{'...' if len(missing_from_matrix)>5 else ''}. Please update your Master Matrix.")
+                        else:
+                            km_final = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(final_matrix)
+                            cluster_map = dict(zip(pool_df['Label'], km_final.labels_))
+                            
+                            st.session_state.df_attrs['Cluster'] = st.session_state.df_attrs['Label'].map(cluster_map)
+                            st.session_state.df_brands['Cluster'] = 0
+                            
+                            for idx in range(len(st.session_state.passive_data)):
+                                if not st.session_state.passive_data[idx].empty:
+                                    st.session_state.passive_data[idx]['Cluster'] = st.session_state.passive_data[idx]['Label'].map(cluster_map)
 
-                        best_thresh = l_min_majority
-                        best_diff = float('inf')
-                        best_reach = 0
+                            wl = get_weight_lookup()
+                            su = get_safe_universe()
 
-                        for t in range(l_min_majority, l_num_items + 1):
-                            reach = calculate_clustered_reach(w_array, t, su, computed_overlap)
-                            diff = abs(reach - target_avg_reach) 
-                            if diff < best_diff:
-                                best_diff = diff
-                                best_thresh = t
-                                best_reach = reach
+                            for cid in range(num_clusters):
+                                c_all = [label for label, clus in cluster_map.items() if clus == cid]
+                                if len(c_all) == 0: continue
 
-                        best_pct = (best_reach / su) * 100 if su > 0 else 0
-                        code = "(" + " + ".join([f"[{r}]" for r in c_all]) + f") >= {best_thresh}"
+                                norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in c_all]
+                                computed_overlap = 1.0
+                                
+                                valid_norms = [n for n in norm_items if n in st.session_state.corr_matrix.index and n in st.session_state.corr_matrix.columns]
+                                if len(valid_norms) > 1:
+                                    sub_matrix = st.session_state.corr_matrix.loc[valid_norms, valid_norms]
+                                    mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
+                                    avg_matrix_val = sub_matrix.where(mask).mean().mean()
+                                    if pd.notna(avg_matrix_val): computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
 
-                        st.session_state.saved_mindsets.append({
-                            "name": f"Auto Segment {cid + 1}",
-                            "items": c_all,
-                            "threshold": best_thresh,
-                            "pop": best_reach,
-                            "pct": best_pct,
-                            "target_avg_pct": target_avg_pct,
-                            "code": code,
-                            "overlap": computed_overlap
-                        })
-                    st.success("✅ Deck Auto-Generated! Scroll to Tab 3 to view.")
+                                l_num_items = len(c_all)
+                                l_min_majority = max(1, (l_num_items // 2) + 1)
+                                w_array = [wl.get(item, 0) for item in c_all]
+                                
+                                target_avg_reach = np.mean(w_array) if w_array else 0
+                                target_avg_pct = (target_avg_reach / su) * 100 if su > 0 else 0
+
+                                best_thresh = l_min_majority
+                                best_diff = float('inf')
+                                best_reach = 0
+
+                                for t in range(l_min_majority, l_num_items + 1):
+                                    reach = calculate_clustered_reach(w_array, t, su, computed_overlap)
+                                    diff = abs(reach - target_avg_reach) 
+                                    if diff < best_diff:
+                                        best_diff = diff
+                                        best_thresh = t
+                                        best_reach = reach
+
+                                best_pct = (best_reach / su) * 100 if su > 0 else 0
+                                code = "(" + " + ".join([f"[{r}]" for r in c_all]) + f") >= {best_thresh}"
+
+                                st.session_state.saved_mindsets.append({
+                                    "name": f"Auto Segment {cid + 1}",
+                                    "items": c_all,
+                                    "threshold": best_thresh,
+                                    "pop": best_reach,
+                                    "pct": best_pct,
+                                    "target_avg_pct": target_avg_pct,
+                                    "code": code,
+                                    "overlap": computed_overlap
+                                })
+                            st.success("✅ Deck Auto-Generated! Scroll to Tab 3 to view.")
 
         st.divider()
         st.header("🔄 View Settings")
@@ -732,75 +735,83 @@ with tab3:
 
                 norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in lasso_items]
                 missing_items = []
+                
                 if not st.session_state.corr_matrix.empty:
                     for orig, norm in zip(lasso_items, norm_items):
                         if norm not in st.session_state.corr_matrix.index or norm not in st.session_state.corr_matrix.columns:
                             missing_items.append(orig)
-                else: missing_items = lasso_items
+                else:
+                    missing_items = lasso_items
                 
                 is_calibrated = False
-                computed_overlap = 0.75 
+                computed_overlap = 0.0 
                 
-                if not st.session_state.corr_matrix.empty:
+                if not st.session_state.corr_matrix.empty and len(missing_items) == 0:
+                    is_calibrated = True
                     valid_norms = [n for n in norm_items if n in st.session_state.corr_matrix.index and n in st.session_state.corr_matrix.columns]
                     if len(valid_norms) > 1:
                         sub_matrix = st.session_state.corr_matrix.loc[valid_norms, valid_norms]
                         mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
                         avg_matrix_val = sub_matrix.where(mask).mean().mean()
                         if pd.notna(avg_matrix_val): computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
-                    elif len(valid_norms) == 1: computed_overlap = 1.0
-                
-                if not st.session_state.corr_matrix.empty and len(missing_items) == 0: is_calibrated = True
+                    elif len(valid_norms) == 1: 
+                        computed_overlap = 1.0
 
+                # --- STRICT SIZING ENFORCEMENT ---
                 if is_calibrated:
                     st.markdown(f"<div class='calibration-box'>✅ <b>MRI Matrix Calibrated:</b> The exact average pairwise correlation of this custom audience is <b>{computed_overlap*100:.1f}%</b>.</div>", unsafe_allow_html=True)
-                    overlap_factor = computed_overlap
-                else:
-                    if st.session_state.corr_matrix.empty: st.info("💡 Upload a Correlation Matrix in the sidebar to automate strict math matching.")
-                    else: st.markdown(f"<div class='error-box'>⚠️ <b>Partial Calibration:</b> Missing `{', '.join(missing_items)}`. Adjust baseline below.</div>", unsafe_allow_html=True)
-                    overlap_factor = st.slider("🧠 Overlap Assumption (Correlation Estimator)", min_value=0.0, max_value=1.0, value=float(computed_overlap), step=0.05)
                     
-                w_array = [weight_lookup.get(item, 0) for item in lasso_items]
-                l_target_pop = np.mean(w_array) if w_array else 0
-                target_avg_pct = (l_target_pop / safe_univ_tab3) * 100 if safe_univ_tab3 > 0 else 0
-                
-                l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
-                l_pct = (l_est_reach / safe_univ_tab3) * 100
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    bar_color = '#2e7d32' if l_pct <= 40 else '#c62828'
-                    st.markdown(f"""
-                        <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
-                            <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; margin-top: 5px;">
-                            <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Active Reach</span>
-                            <span style="color: #666">Target Average Reference: {target_avg_pct:.1f}%</span>
-                        </div>
-                    """, unsafe_allow_html=True)
+                    overlap_factor = computed_overlap
+                    w_array = [weight_lookup.get(item, 0) for item in lasso_items]
+                    l_target_pop = np.mean(w_array) if w_array else 0
+                    target_avg_pct = (l_target_pop / safe_univ_tab3) * 100 if safe_univ_tab3 > 0 else 0
+                    
+                    l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
+                    l_pct = (l_est_reach / safe_univ_tab3) * 100
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        bar_color = '#2e7d32' if l_pct <= 40 else '#c62828'
+                        st.markdown(f"""
+                            <div style="background-color: #eee; border-radius: 5px; width: 100%; height: 20px;">
+                                <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+                                <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Active Reach</span>
+                                <span style="color: #666">Target Average Reference: {target_avg_pct:.1f}%</span>
+                            </div>
+                        """, unsafe_allow_html=True)
 
-                with col2:
-                    st.markdown(f"**Active Population Size:** {l_est_reach:,.0f} (000s)")
-                    st.markdown(f"*(Target Goal Size: {l_target_pop:,.0f})*")
+                    with col2:
+                        st.markdown(f"**Active Population Size:** {l_est_reach:,.0f} (000s)")
+                        st.markdown(f"*(Target Goal Size: {l_target_pop:,.0f})*")
 
-                l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
-                st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
-                
-                st.markdown("---")
-                st.markdown("### 💾 Add to Mindset Deck")
-                col_name, col_save = st.columns([3, 1])
-                with col_name: ms_name = st.text_input("Name this Mindset:", value=f"Custom Audience {len(st.session_state.saved_mindsets) + 1}")
-                with col_save:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("➕ Save Mindset", use_container_width=True):
-                        st.session_state.saved_mindsets.append({
-                            "name": ms_name, "items": lasso_items, "threshold": l_thresh,
-                            "pop": l_est_reach, "pct": l_pct, "code": l_code, "overlap": overlap_factor,
-                            "target_avg_pct": target_avg_pct
-                        })
-                        st.success("Saved! Check your deck below.")
-                        st.rerun()
+                    l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
+                    st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
+                    
+                    st.markdown("---")
+                    st.markdown("### 💾 Add to Mindset Deck")
+                    col_name, col_save = st.columns([3, 1])
+                    with col_name: ms_name = st.text_input("Name this Mindset:", value=f"Custom Audience {len(st.session_state.saved_mindsets) + 1}")
+                    with col_save:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("➕ Save Mindset", use_container_width=True):
+                            st.session_state.saved_mindsets.append({
+                                "name": ms_name, "items": lasso_items, "threshold": l_thresh,
+                                "pop": l_est_reach, "pct": l_pct, "code": l_code, "overlap": overlap_factor,
+                                "target_avg_pct": target_avg_pct
+                            })
+                            st.success("Saved! Check your deck below.")
+                            st.rerun()
+                else:
+                    if st.session_state.corr_matrix.empty:
+                        st.markdown("<div class='error-box'>❌ <b>Matrix Required:</b> You must upload a Master Correlation Matrix in the 'Advanced Calibration' sidebar to calculate population sizing.</div>", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"<div class='error-box'>❌ <b>Data Missing:</b> The following items are missing from your uploaded matrix: <br> `{', '.join(missing_items)}` <br><br> Update your matrix in the sidebar to enable sizing calculations.</div>", unsafe_allow_html=True)
+                    
+                    l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
+                    st.markdown(f'<div class="logic-tag">MRI SYNTAX (Sizing Locked)</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
+                    
     else:
         st.info("👈 Open the Map toolbar, select the 'Box Select' (bubble) icon, and draw around points to build a new mindset.")
 
