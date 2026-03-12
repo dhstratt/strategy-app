@@ -35,6 +35,8 @@ st.markdown("""
             background-color: #f3e5f5; margin-bottom: 25px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
+        .size-badge-warning { float: right; background: #e65100; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
+        .size-badge-custom { float: right; background: #4527a0; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
         .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; height: 100%; display: flex; align-items: center;}
@@ -77,8 +79,12 @@ def clean_df(df_input, is_core=False):
     df[label_col] = df[label_col].str.replace('"', '', regex=False)
     df[label_col] = df[label_col].str.strip()
     
+    # Drop duplicate columns
     df = df.loc[:, ~df.columns.duplicated()].copy()
+    
     df = df.set_index(label_col)
+    
+    # Drop duplicate rows (safeguard against messy MRI files)
     df = df[~df.index.duplicated(keep='first')]
     
     for col in df.columns:
@@ -117,8 +123,8 @@ def rotate_coords(df_to_rot, angle_deg):
 
 def process_correlation_matrix(uploaded_file):
     try:
-        file_bytes = uploaded_file.getvalue()
-        df_corr = pd.read_csv(io.BytesIO(file_bytes), index_col=0) if uploaded_file.name.endswith('.csv') else pd.read_excel(io.BytesIO(file_bytes), index_col=0)
+        uploaded_file.seek(0)
+        df_corr = pd.read_csv(uploaded_file, index_col=0) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file, index_col=0)
         df_corr.index = normalize_strings(df_corr.index)
         df_corr.columns = normalize_strings(df_corr.columns)
         for col in df_corr.columns:
@@ -152,8 +158,9 @@ def get_safe_universe():
 # ==========================================
 def process_data(uploaded_file, passive_files, passive_configs):
     try:
-        core_bytes = uploaded_file.getvalue()
-        raw_data = pd.read_csv(io.BytesIO(core_bytes)) if uploaded_file.name.endswith('.csv') else pd.read_excel(io.BytesIO(core_bytes))
+        # AGGRESSIVE BUFFER REWIND TO PREVENT CACHE COLLISION
+        uploaded_file.seek(0)
+        raw_data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         df_math_ready = clean_df(raw_data, is_core=True)
         df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
         
@@ -181,8 +188,8 @@ def process_data(uploaded_file, passive_files, passive_configs):
 
             for i, cfg in enumerate(passive_configs):
                 pf = cfg['file']
-                pf_bytes = pf.getvalue()
-                p_raw = pd.read_csv(io.BytesIO(pf_bytes)) if pf.name.endswith('.csv') else pd.read_excel(io.BytesIO(pf_bytes))
+                pf.seek(0) # AGGRESSIVE BUFFER REWIND
+                p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
                 p_c = clean_df(p_raw, is_core=False)
                 
                 p_cols_norm = normalize_strings(p_c.columns)
@@ -365,7 +372,8 @@ with tab1:
                 if not layer.empty and layer['Visible'].iloc[0] and 'Label' in layer.columns:
                     with st.expander(f"🔍 Filter {layer['LayerName'].iloc[0]}", expanded=False):
                         l_opts = sorted(layer['Label'].unique())
-                        sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}")
+                        # STATE COLLISION FIX: We inject the Shape into the key so flipping Rows vs Columns spawns a fresh filter!
+                        sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}_{layer['Shape'].iloc[0]}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
         fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers', marker=dict(size=10, color='#1f77b4'), name="Columns"))
@@ -387,7 +395,6 @@ with tab1:
 
         ai_colors = px.colors.qualitative.Bold
 
-        # --- OPTIMIZED MAP PLOTTING FUNCTION ---
         def plot_layer(df_plot, shape, base_color, show_labels, size=10, is_brand=False):
             if df_plot.empty: return
             if enable_clustering:
