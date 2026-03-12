@@ -11,6 +11,7 @@ import math
 # --- SAFE IMPORT ---
 try:
     from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
@@ -79,12 +80,8 @@ def clean_df(df_input, is_core=False):
     df[label_col] = df[label_col].str.replace('"', '', regex=False)
     df[label_col] = df[label_col].str.strip()
     
-    # Drop duplicate columns
     df = df.loc[:, ~df.columns.duplicated()].copy()
-    
     df = df.set_index(label_col)
-    
-    # Drop duplicate rows (safeguard against messy MRI files)
     df = df[~df.index.duplicated(keep='first')]
     
     for col in df.columns:
@@ -153,14 +150,20 @@ def calculate_clustered_reach(weights_list, threshold, universe_size, overlap_fa
 def get_safe_universe():
     return st.session_state.universe_size if st.session_state.universe_size > 0 else 258000.0
 
+def get_weight_lookup():
+    wl = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
+    for layer in st.session_state.passive_data:
+        if isinstance(layer, pd.DataFrame) and not layer.empty and 'Label' in layer.columns and 'Weight' in layer.columns:
+            wl.update(dict(zip(layer['Label'], layer['Weight'])))
+    return wl
+
 # ==========================================
 # DATA PROCESSING ENGINE
 # ==========================================
 def process_data(uploaded_file, passive_files, passive_configs):
     try:
-        # AGGRESSIVE BUFFER REWIND TO PREVENT CACHE COLLISION
-        uploaded_file.seek(0)
-        raw_data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+        core_bytes = uploaded_file.getvalue()
+        raw_data = pd.read_csv(io.BytesIO(core_bytes)) if uploaded_file.name.endswith('.csv') else pd.read_excel(io.BytesIO(core_bytes))
         df_math_ready = clean_df(raw_data, is_core=True)
         df_math = df_math_ready.loc[(df_math_ready != 0).any(axis=1)]
         
@@ -188,8 +191,8 @@ def process_data(uploaded_file, passive_files, passive_configs):
 
             for i, cfg in enumerate(passive_configs):
                 pf = cfg['file']
-                pf.seek(0) # AGGRESSIVE BUFFER REWIND
-                p_raw = pd.read_csv(pf) if pf.name.endswith('.csv') else pd.read_excel(pf)
+                pf_bytes = pf.getvalue()
+                p_raw = pd.read_csv(io.BytesIO(pf_bytes)) if pf.name.endswith('.csv') else pd.read_excel(io.BytesIO(pf_bytes))
                 p_c = clean_df(p_raw, is_core=False)
                 
                 p_cols_norm = normalize_strings(p_c.columns)
@@ -198,7 +201,6 @@ def process_data(uploaded_file, passive_files, passive_configs):
                 common_b_count = sum(1 for x in p_cols_norm if x in col_mapper)
                 common_r_count = sum(1 for x in p_idx_norm if x in row_mapper)
                 
-                # --- STRICTLY ROWS OR COLUMNS (NO AUTO) ---
                 is_rows = (cfg["mode"] == "Rows (Stars)")
                 
                 proj = np.array([]); p_aligned = pd.DataFrame()
@@ -285,10 +287,7 @@ with tab1:
                 with st.expander(f"{icon} {header_name}", expanded=False):
                     p_name = st.text_input("Layer Name", pf.name, key=f"n_{pf.name}")
                     p_show = st.checkbox("Show on Map", True, key=f"s_{pf.name}")
-                    
-                    # --- AUTO COMPLETELY REMOVED, ROWS DEFAULT ---
                     p_mode = st.radio("Map As:", ["Rows (Stars)", "Columns (Diamonds)"], index=0, key=f"mode_{pf.name}")
-                    
                     if st.session_state.processed_data and i < len(st.session_state.passive_data):
                         st.caption(f"Status: {st.session_state.passive_data[i].get('Status', 'Pending')}")
                     passive_configs.append({"file": pf, "name": p_name, "show": p_show, "mode": p_mode})
@@ -330,8 +329,110 @@ with tab1:
         st.divider()
         st.header("⚗️ AI Recommendations")
         enable_clustering = st.checkbox("Show Suggested Clusters (AI Boss)", False) 
-        if enable_clustering:
-            num_clusters = st.slider("Suggested # of Mindsets", 2, 8, 4)
+        
+        num_clusters = 4
+        if enable_clustering and HAS_SKLEARN and st.session_state.processed_data:
+            df_a_raw = st.session_state.df_attrs
+            p_source_raw = st.session_state.passive_data if 'passive_data' in st.session_state else []
+            dfs_to_cluster_raw = [df_a_raw[['x', 'y']]]
+            for l in p_source_raw:
+                if isinstance(l, pd.DataFrame) and not l.empty and 'x' in l.columns:
+                    dfs_to_cluster_raw.append(l[['x', 'y']])
+            pool_raw = pd.concat(dfs_to_cluster_raw)
+
+            best_k = 4
+            if len(pool_raw) > 3:
+                best_score = -1
+                max_test_k = min(8, len(pool_raw) - 1)
+                for k in range(2, max_test_k + 1):
+                    km_test = KMeans(n_clusters=k, random_state=42, n_init=10).fit(pool_raw)
+                    score = silhouette_score(pool_raw, km_test.labels_)
+                    if score > best_score:
+                        best_score = score
+                        best_k = k
+                st.markdown(f"<div style='background:#e3f2fd; padding:10px; border-radius:5px; color:#0d47a1; margin-bottom:10px; font-size:0.9em;'>📈 <b>Statistical Insight:</b> The optimal number of mindsets for this landscape is <b>{best_k}</b>.</div>", unsafe_allow_html=True)
+            else:
+                best_k = 2
+
+            num_clusters = st.slider("Suggested # of Mindsets", 2, 8, int(best_k))
+
+            # --- UPDATED AI AUTO-GENERATOR WITH TRUE GOLDILOCKS SIZING ---
+            if st.button("⚡ Auto-Generate Deck", help="Instantly build optimal formulas for all clusters and save to Tab 3."):
+                km_final = KMeans(n_clusters=num_clusters, random_state=42, n_init=10).fit(pool_raw)
+                
+                temp_a = df_a_raw.copy()
+                temp_a['Cluster'] = km_final.predict(temp_a[['x', 'y']])
+                
+                temp_p_list = []
+                for l in p_source_raw:
+                    if isinstance(l, pd.DataFrame) and not l.empty and 'x' in l.columns:
+                        tl = l.copy()
+                        tl['Cluster'] = km_final.predict(tl[['x', 'y']])
+                        temp_p_list.append(tl)
+
+                wl = get_weight_lookup()
+                su = get_safe_universe()
+
+                for cid in range(num_clusters):
+                    c_core = temp_a[temp_a['Cluster'] == cid]['Label'].tolist()
+                    c_pass = []
+                    for tl in temp_p_list:
+                        c_pass.extend(tl[tl['Cluster'] == cid]['Label'].tolist())
+
+                    # Combine all active and passive layers for mathematical generation
+                    c_all = c_core + c_pass
+                    if len(c_all) == 0: continue
+
+                    norm_items = [normalize_strings(pd.Series([item])).iloc[0] for item in c_all]
+                    computed_overlap = 0.75
+                    if not st.session_state.corr_matrix.empty:
+                        valid_norms = [n for n in norm_items if n in st.session_state.corr_matrix.index and n in st.session_state.corr_matrix.columns]
+                        if len(valid_norms) > 1:
+                            sub_matrix = st.session_state.corr_matrix.loc[valid_norms, valid_norms]
+                            mask = np.triu(np.ones(sub_matrix.shape), k=1).astype(bool)
+                            avg_matrix_val = sub_matrix.where(mask).mean().mean()
+                            if pd.notna(avg_matrix_val): computed_overlap = np.clip(avg_matrix_val, 0.0, 1.0)
+                        elif len(valid_norms) == 1:
+                            computed_overlap = 1.0
+
+                    l_num_items = len(c_all)
+                    l_min_majority = max(1, (l_num_items // 2) + 1)
+                    w_array = [wl.get(item, 0) for item in c_all]
+                    
+                    # True Goldilocks Target: Mathematical Mean of specific inputs
+                    target_avg_reach = np.mean(w_array) if w_array else 0
+                    target_avg_pct = (target_avg_reach / su) * 100 if su > 0 else 0
+
+                    best_thresh = l_min_majority
+                    best_diff = float('inf')
+                    best_reach = 0
+
+                    # Find threshold closest to true mean target
+                    for t in range(l_min_majority, l_num_items + 1):
+                        reach = calculate_clustered_reach(w_array, t, su, computed_overlap)
+                        diff = abs(reach - target_avg_reach) 
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_thresh = t
+                            best_reach = reach
+
+                    best_pct = (best_reach / su) * 100 if su > 0 else 0
+                    code = "(" + " + ".join([f"[{r}]" for r in c_all]) + f") >= {best_thresh}"
+
+                    st.session_state.saved_mindsets.append({
+                        "name": f"Auto Segment {cid + 1}",
+                        "items": c_all,
+                        "threshold": best_thresh,
+                        "pop": best_reach,
+                        "pct": best_pct,
+                        "target_avg_pct": target_avg_pct,
+                        "code": code,
+                        "overlap": computed_overlap
+                    })
+                st.success("✅ Deck Auto-Generated! Scroll to Tab 3 to view.")
+
+        elif enable_clustering and not HAS_SKLEARN:
+            st.error("Scikit-learn library is required for AI clustering.")
 
         st.divider()
         st.header("🔄 View Settings")
@@ -374,7 +475,6 @@ with tab1:
                 if not layer.empty and layer['Visible'].iloc[0] and 'Label' in layer.columns:
                     with st.expander(f"🔍 Filter {layer['LayerName'].iloc[0]}", expanded=False):
                         l_opts = sorted(layer['Label'].unique())
-                        # Unique dynamic key generated with layer shape so Streamlit doesn't collide memory caches!
                         sel_p = st.multiselect("Visible Items:", l_opts, default=l_opts, key=f"filter_{i}_{layer['Shape'].iloc[0]}")
                         df_p_list[i] = layer[layer['Label'].isin(sel_p)]
 
@@ -571,10 +671,7 @@ with tab3:
 
     if st.session_state.lasso_labels:
         safe_univ_tab3 = get_safe_universe()
-        weight_lookup = dict(zip(st.session_state.df_attrs['Label'], st.session_state.df_attrs['Weight']))
-        for layer in st.session_state.passive_data:
-            if isinstance(layer, pd.DataFrame) and not layer.empty and 'Label' in layer.columns and 'Weight' in layer.columns:
-                weight_lookup.update(dict(zip(layer['Label'], layer['Weight'])))
+        weight_lookup = get_weight_lookup()
         all_available_labels = sorted(list(weight_lookup.keys()))
 
         with st.container():
@@ -638,8 +735,10 @@ with tab3:
                         
                     overlap_factor = st.slider("🧠 Overlap Assumption (Correlation Estimator)", min_value=0.0, max_value=1.0, value=float(computed_overlap), step=0.05)
                     
-                l_target_pop = np.mean([weight_lookup.get(item, 0) for item in lasso_items])
                 w_array = [weight_lookup.get(item, 0) for item in lasso_items]
+                l_target_pop = np.mean(w_array) if w_array else 0
+                target_avg_pct = (l_target_pop / safe_univ_tab3) * 100 if safe_univ_tab3 > 0 else 0
+                
                 l_est_reach = calculate_clustered_reach(w_array, l_thresh, safe_univ_tab3, overlap_factor)
                 l_pct = (l_est_reach / safe_univ_tab3) * 100
                 
@@ -651,15 +750,14 @@ with tab3:
                             <div style="background-color: {bar_color}; width: {min(100, l_pct)}%; height: 100%; border-radius: 5px;"></div>
                         </div>
                         <div style="display: flex; justify-content: space-between; margin-top: 5px;">
-                            <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Target Reach</span>
-                            <span style="color: #666">40% Recommendation Cap</span>
+                            <span style="font-weight: bold; color: {bar_color}">{l_pct:.1f}% Active Reach</span>
+                            <span style="color: #666">Target Average Reference: {target_avg_pct:.1f}%</span>
                         </div>
                     """, unsafe_allow_html=True)
-                    if l_pct > 40: st.caption("⚠️ Audience too broad. Increase threshold or remove statements.")
 
                 with col2:
-                    st.markdown(f"**Exact Population Size:** {l_est_reach:,.0f} (000s)")
-                    st.markdown(f"*(Avg. Baseline for Reference: ~{(l_target_pop/safe_univ_tab3)*100:.1f}%)*")
+                    st.markdown(f"**Active Population Size:** {l_est_reach:,.0f} (000s)")
+                    st.markdown(f"*(Target Goal Size: {l_target_pop:,.0f})*")
 
                 l_code = "(" + " + ".join([f"[{r}]" for r in lasso_items]) + f") >= {l_thresh}"
                 st.markdown(f'<div class="logic-tag">MRI SYNTAX</div><div class="code-block">{l_code}</div>', unsafe_allow_html=True)
@@ -673,7 +771,8 @@ with tab3:
                     if st.button("➕ Save Mindset", use_container_width=True):
                         st.session_state.saved_mindsets.append({
                             "name": ms_name, "items": lasso_items, "threshold": l_thresh,
-                            "pop": l_est_reach, "pct": l_pct, "code": l_code, "overlap": overlap_factor
+                            "pop": l_est_reach, "pct": l_pct, "code": l_code, "overlap": overlap_factor,
+                            "target_avg_pct": target_avg_pct
                         })
                         st.success("Saved! Check your deck below.")
                         st.rerun()
@@ -689,8 +788,9 @@ with tab3:
             with st.expander(f"📦 {ms['name']} — {ms['pct']:.1f}% Reach ({ms['pop']:,.0f}k)", expanded=False):
                 st.markdown(f"**Statements Included ({len(ms['items'])}):** {', '.join(ms['items'])}")
                 st.markdown(f"**Logic Rule:** Agree with *At Least {ms['threshold']}* of the {len(ms['items'])} statements.")
+                st.markdown(f"**Target Average Size:** {ms.get('target_avg_pct', 0):.1f}%")
                 st.markdown(f"**MRI Overlap Correlation:** {ms['overlap']*100:.1f}%")
-                st.markdown(f'<div class="code-block" style="padding:15px; margin-top:5px; font-size:1em;">{ms["code"]}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="code-block" style="padding:15px; margin-top:10px; font-size:1em;">{ms["code"]}</div>', unsafe_allow_html=True)
                 if st.button("🗑️ Delete Mindset", key=f"del_ms_{idx}"):
                     st.session_state.saved_mindsets.pop(idx)
                     st.rerun()
