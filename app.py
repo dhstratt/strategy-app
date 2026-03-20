@@ -958,8 +958,9 @@ with tab4:
                 'displayModeBar': True,
                 'modeBarButtonsToRemove': ['zoom2d', 'pan2d', 'select2d', 'lasso2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d'],
                 'edits': {
-                    'annotationPosition': True,
-                    'annotationText': True
+                    'annotationTail': True,       # Allows dragging the text while keeping the arrow anchored
+                    'annotationText': True,       # Allows double-clicking to edit the text itself
+                    'annotationPosition': False   # Prevents accidentally moving the anchor away from the dot
                 },
                 'toImageButtonOptions': {
                     'format': 'png',
