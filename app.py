@@ -912,28 +912,45 @@ with tab4:
             df_plot = current_df[current_df['Label'].isin(active_selections)]
 
             fig_exp = go.Figure()
+            annotations = []
 
             if not df_plot.empty:
-                # Add traces point by point to allow individual label editing
+                # Add traces point by point to allow individual dot clicking
                 for i, row in df_plot.iterrows():
                     fig_exp.add_trace(go.Scatter(
-                        x=[row['x']], y=[row['y']], mode='markers+text',
+                        x=[row['x']], y=[row['y']], mode='markers',
                         marker=dict(size=14, symbol=selected_shape, color=selected_color, line=dict(width=1, color='white')),
-                        text=[row['Label']], textposition="top center", customdata=[row['Label']],
+                        customdata=[row['Label']],
                         hovertemplate="<b>%{customdata}</b><extra></extra>",
-                        textfont=dict(size=label_size, color=selected_color, family="Nunito"),
                         name=row['Label'],
                         showlegend=False
                     ))
+                    
+                    # Convert labels to draggable annotations with connector lines
+                    annotations.append(dict(
+                        x=row['x'],
+                        y=row['y'],
+                        xref="x",
+                        yref="y",
+                        text=row['Label'],
+                        showarrow=True,
+                        arrowhead=0,        # Clean line with no arrow head
+                        arrowwidth=1,       # Thin connector
+                        arrowcolor=selected_color,
+                        ax=0,               # Default straight up
+                        ay=-30,             # Start slightly offset above the dot
+                        font=dict(size=label_size, color=selected_color, family="Nunito")
+                    ))
 
-            # Lock axes, make background fully transparent, and allow editing
+            # Lock axes, make background fully transparent, and apply draggable annotations
             fig_exp.update_layout(
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
                 dragmode=False, # Disable panning
                 margin=dict(l=0, r=0, t=0, b=0),
                 xaxis=dict(range=x_range, fixedrange=True, showgrid=False, zeroline=False, visible=False),
-                yaxis=dict(range=y_range, fixedrange=True, scaleanchor="x", scaleratio=1, showgrid=False, zeroline=False, visible=False)
+                yaxis=dict(range=y_range, fixedrange=True, scaleanchor="x", scaleratio=1, showgrid=False, zeroline=False, visible=False),
+                annotations=annotations
             )
 
             # High-Resolution 16:9 Configuration for PowerPoint
