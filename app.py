@@ -7,6 +7,7 @@ import io
 import pickle
 import re
 import math 
+import textwrap
 
 # --- SAFE IMPORTS FOR MATH & MEANING ---
 try:
@@ -29,10 +30,10 @@ st.set_page_config(layout="wide", page_title="The Consumer Landscape")
 # --- CUSTOM CSS ---
 st.markdown("""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');
-        html, body, [class*="css"] { font-family: 'Nunito', sans-serif; }
-        h1, h2, h3 { font-family: 'Nunito', sans-serif; font-weight: 800; }
-        .stMetric { font-family: 'Nunito', sans-serif; }
+        @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap');
+        html, body, [class*="css"] { font-family: 'Quicksand', sans-serif; }
+        h1, h2, h3 { font-family: 'Quicksand', sans-serif; font-weight: 700; }
+        .stMetric { font-family: 'Quicksand', sans-serif; }
         
         .mindset-card {
             padding: 20px; border-radius: 10px; border-left: 10px solid #ccc;
@@ -42,10 +43,10 @@ st.markdown("""
             padding: 20px; border-radius: 10px; border-left: 10px solid #673ab7;
             background-color: #f3e5f5; margin-bottom: 25px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
-        .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 800; color: #fff; }
+        .size-badge { float: right; background: #004d40; padding: 4px 10px; border-radius: 20px; font-size: 0.85em; font-weight: 700; color: #fff; }
         .code-block { background-color: #1e1e1e; color: #d4d4d4; padding: 25px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 1.1em; margin-top: 10px; white-space: pre-wrap; border: 1px solid #444; line-height: 1.6; }
-        .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 800; margin-bottom: 15px; display: inline-block; }
-        .passive-tag { background: #e3f2fd; border: 1px solid #90caf9; color: #1565c0; padding: 4px 12px; border-radius: 15px; font-size: 0.85em; font-weight: 800; margin-right: 5px; margin-bottom: 5px; display: inline-block; }
+        .logic-tag { background: #333; color: #fff; padding: 4px 12px; border-radius: 4px; font-size: 0.9em; font-weight: 700; margin-bottom: 15px; display: inline-block; }
+        .passive-tag { background: #e3f2fd; border: 1px solid #90caf9; color: #1565c0; padding: 4px 12px; border-radius: 15px; font-size: 0.85em; font-weight: 700; margin-right: 5px; margin-bottom: 5px; display: inline-block; }
         .success-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-top: 10px; height: 100%; display: flex; align-items: center;}
         .calibration-box { background-color: #e8f5e9; border: 1px solid #4caf50; padding: 10px; border-radius: 5px; color: #2e7d32; font-weight: bold; margin-bottom: 15px;}
         .error-box { background-color: #ffebee; border: 1px solid #f44336; padding: 15px; border-radius: 5px; color: #c62828; margin-bottom: 15px; font-weight: 600;}
@@ -575,7 +576,7 @@ with tab1:
 
         fig.update_layout(
             template="plotly_white", height=map_height, margin=dict(l=0, r=0, t=30, b=0),
-            yaxis_scaleanchor="x", dragmode='pan', hoverlabel=dict(bgcolor="white", font_size=14, font_family="Nunito"),
+            yaxis_scaleanchor="x", dragmode='pan', hoverlabel=dict(bgcolor="white", font_size=14, font_family="Quicksand"),
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False), 
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, visible=False)
         )
@@ -837,7 +838,6 @@ with tab4:
         exp_sidebar, exp_main = st.columns([1, 3])
 
         # 1. Global Axis Locking (Crucial for PPT stacking)
-        # We calculate the max boundaries across ALL data so every export is framed exactly the same.
         all_df = [st.session_state.df_brands, st.session_state.df_attrs]
         for p in st.session_state.passive_data:
             if not p.empty and 'x' in p.columns: all_df.append(p)
@@ -901,7 +901,12 @@ with tab4:
 
             selected_color = st.color_picker("Layer Color", value=def_color)
             selected_shape = st.selectbox("Layer Shape", options=shape_options, index=shape_options.index(def_shape))
+            
+            label_position = st.selectbox("Initial Label Position", ["Top", "Bottom", "Left", "Right", "Radial Outward (Auto-Spread)"], index=4)
+            tail_length = st.slider("Connector Line Length", 10, 150, 40)
+            
             label_size = st.slider("Label Size", 8, 32, 14)
+            wrap_length = st.slider("Max Characters Per Line", 10, 150, 40)
 
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🔄 Reset All Hidden Statements", use_container_width=True):
@@ -915,8 +920,30 @@ with tab4:
             annotations = []
 
             if not df_plot.empty:
+                # Calculate cluster center for radial spread
+                cx = df_plot['x'].mean() if not df_plot.empty else 0
+                cy = df_plot['y'].mean() if not df_plot.empty else 0
+
                 # Add traces point by point to allow individual dot clicking
                 for i, row in df_plot.iterrows():
+                    wrapped_label = "<br>".join(textwrap.wrap(str(row['Label']), width=wrap_length))
+                    
+                    # Calculate label starting position offsets (ax, ay)
+                    if label_position == "Top": ax_val, ay_val = 0, -tail_length
+                    elif label_position == "Bottom": ax_val, ay_val = 0, tail_length
+                    elif label_position == "Left": ax_val, ay_val = -tail_length, 0
+                    elif label_position == "Right": ax_val, ay_val = tail_length, 0
+                    else: # Radial Outward (Auto-Spread)
+                        dx = row['x'] - cx
+                        dy = row['y'] - cy
+                        dist = math.hypot(dx, dy)
+                        if dist < 1e-5:
+                            ax_val, ay_val = 0, -tail_length
+                        else:
+                            ax_val = (dx / dist) * tail_length
+                            # Plotly ay is pixels down from top, so we reverse it to match math coordinates
+                            ay_val = -(dy / dist) * tail_length
+
                     fig_exp.add_trace(go.Scatter(
                         x=[row['x']], y=[row['y']], mode='markers',
                         marker=dict(size=14, symbol=selected_shape, color=selected_color, line=dict(width=1, color='white')),
@@ -932,14 +959,14 @@ with tab4:
                         y=row['y'],
                         xref="x",
                         yref="y",
-                        text=row['Label'],
+                        text=wrapped_label,
                         showarrow=True,
                         arrowhead=0,        # Clean line with no arrow head
                         arrowwidth=1,       # Thin connector
                         arrowcolor=selected_color,
-                        ax=0,               # Default straight up
-                        ay=-30,             # Start slightly offset above the dot
-                        font=dict(size=label_size, color=selected_color, family="Nunito")
+                        ax=ax_val,          # Horizontal tail position
+                        ay=ay_val,          # Vertical tail position
+                        font=dict(size=label_size, color=selected_color, family="Quicksand")
                     ))
 
             # Lock axes, make background fully transparent, and apply draggable annotations
@@ -971,11 +998,11 @@ with tab4:
                 }
             }
 
-            st.info("📸 **Hover over the top right of the map and click the Camera Icon to download this layer.** You can click and drag labels to reposition them!")
+            st.info("📸 **Hover over the top right of the map and click the Camera Icon to download this layer.** You can click and drag labels to reposition them! (Double-click a label to edit its text manually).")
 
             exp_map_event = st.plotly_chart(
                 fig_exp, use_container_width=True, config=exp_config,
-                on_select="rerun", selection_mode="points", key=f"exp_map_{target_layer}_{label_size}_{selected_color}_{selected_shape}"
+                on_select="rerun", selection_mode="points", key=f"exp_map_{target_layer}_{label_size}_{selected_color}_{selected_shape}_{wrap_length}_{label_position}_{tail_length}"
             )
 
             # Click-to-hide logic
