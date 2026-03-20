@@ -66,6 +66,7 @@ if 'lasso_labels' not in st.session_state: st.session_state.lasso_labels = []
 if 'map_key' not in st.session_state: st.session_state.map_key = 0 
 if 'corr_matrix' not in st.session_state: st.session_state.corr_matrix = pd.DataFrame()
 if 'saved_mindsets' not in st.session_state: st.session_state.saved_mindsets = []
+if 'hidden_export_items' not in st.session_state: st.session_state.hidden_export_items = []
 
 # --- HELPERS ---
 @st.cache_resource(show_spinner="Loading Semantic NLP Engine (first time only)...")
@@ -253,7 +254,7 @@ def process_data(uploaded_file, passive_files, passive_configs):
 # ==========================================
 # UI
 # ==========================================
-tab1, tab2, tab3 = st.tabs(["🗺️ Strategic Map", "🧹 MRI Cleaner", "📟 Count Code Editor"])
+tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Strategic Map", "🧹 MRI Cleaner", "📟 Count Code Editor", "📥 PNG Exporter"])
 
 with tab1:
     st.title("🗺️ The Consumer Landscape")
@@ -827,3 +828,125 @@ with tab3:
                 if st.button("🗑️ Delete Mindset", key=f"del_ms_{idx}"):
                     st.session_state.saved_mindsets.pop(idx)
                     st.rerun()
+
+with tab4:
+    st.header("📥 Transparent PNG Exporter")
+    st.markdown("Export individual map layers with perfectly locked dimensions so they stack flawlessly on a PowerPoint slide.")
+
+    if st.session_state.processed_data:
+        exp_sidebar, exp_main = st.columns([1, 3])
+
+        # 1. Global Axis Locking (Crucial for PPT stacking)
+        # We calculate the max boundaries across ALL data so every export is framed exactly the same.
+        all_df = [st.session_state.df_brands, st.session_state.df_attrs]
+        for p in st.session_state.passive_data:
+            if not p.empty and 'x' in p.columns: all_df.append(p)
+
+        x_vals, y_vals = [], []
+        for d in all_df:
+            x_vals.extend(d['x'].tolist())
+            y_vals.extend(d['y'].tolist())
+
+        min_x, max_x = min(x_vals) if x_vals else -1, max(x_vals) if x_vals else 1
+        min_y, max_y = min(y_vals) if y_vals else -1, max(y_vals) if y_vals else 1
+        
+        pad_x = (max_x - min_x) * 0.15 or 1
+        pad_y = (max_y - min_y) * 0.15 or 1
+        x_range = [min_x - pad_x, max_x + pad_x]
+        y_range = [min_y - pad_y, max_y + pad_y]
+
+        with exp_sidebar:
+            st.subheader("⚙️ Export Controls")
+            
+            # Layer Selection
+            layer_options = ["Base Columns", "Base Rows"]
+            p_names = [l['LayerName'].iloc[0] for l in st.session_state.passive_data if not l.empty and 'Label' in l.columns]
+            layer_options.extend(p_names)
+
+            target_layer = st.radio("1. Select Layer to Preview:", layer_options)
+
+            # Get the correct dataframe
+            if target_layer == "Base Columns": current_df = st.session_state.df_brands
+            elif target_layer == "Base Rows": current_df = st.session_state.df_attrs
+            else: current_df = next(l for l in st.session_state.passive_data if not l.empty and l['LayerName'].iloc[0] == target_layer)
+
+            all_labels = current_df['Label'].tolist()
+            visible_labels = [lbl for lbl in all_labels if lbl not in st.session_state.hidden_export_items]
+
+            st.markdown("---")
+            st.markdown("**2. Manage Statements**")
+            st.caption("Single-click a dot on the map to remove it, or add/remove them from this list manually.")
+            
+            # Bidirectional Sync Dropdown
+            active_selections = st.multiselect("Visible Items:", options=all_labels, default=visible_labels)
+
+            new_hidden = [lbl for lbl in all_labels if lbl not in active_selections]
+            other_hidden = [lbl for lbl in st.session_state.hidden_export_items if lbl not in all_labels]
+            st.session_state.hidden_export_items = new_hidden + other_hidden
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🔄 Reset All Hidden Statements", use_container_width=True):
+                st.session_state.hidden_export_items = []
+                st.rerun()
+
+        with exp_main:
+            df_plot = current_df[current_df['Label'].isin(active_selections)]
+
+            fig_exp = go.Figure()
+            
+            # Styling based on layer type
+            shape, color = 'circle', '#1f77b4'
+            if target_layer == "Base Rows": color = '#d62728'
+            elif target_layer not in ["Base Columns", "Base Rows"]:
+                shape = df_plot['Shape'].iloc[0] if not df_plot.empty else 'star'
+                color = '#555'
+
+            if not df_plot.empty:
+                fig_exp.add_trace(go.Scatter(
+                    x=df_plot['x'], y=df_plot['y'], mode='markers+text',
+                    marker=dict(size=14, symbol=shape, color=color, line=dict(width=1, color='white')),
+                    text=df_plot['Label'], textposition="top center", customdata=df_plot['Label'],
+                    hovertemplate="<b>%{customdata}</b><extra></extra>",
+                    textfont=dict(size=14, color=color, family="Nunito")
+                ))
+
+            # Lock axes and make background fully transparent
+            fig_exp.update_layout(
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                dragmode=False, # Disable panning
+                margin=dict(l=0, r=0, t=0, b=0),
+                xaxis=dict(range=x_range, fixedrange=True, showgrid=False, zeroline=False, visible=False),
+                yaxis=dict(range=y_range, fixedrange=True, scaleanchor="x", scaleratio=1, showgrid=False, zeroline=False, visible=False)
+            )
+
+            # High-Resolution 16:9 Configuration for PowerPoint
+            exp_config = {
+                'displayModeBar': True,
+                'modeBarButtonsToRemove': ['zoom2d', 'pan2d', 'select2d', 'lasso2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d'],
+                'toImageButtonOptions': {
+                    'format': 'png',
+                    'filename': f"{target_layer}_Layer_Export",
+                    'height': 720,
+                    'width': 1280,
+                    'scale': 2 # Multiplies res for crystal clear text
+                }
+            }
+
+            st.info("📸 **Hover over the top right of the map and click the Camera Icon to download this layer.**")
+
+            exp_map_event = st.plotly_chart(
+                fig_exp, use_container_width=True, config=exp_config,
+                on_select="rerun", selection_mode="points", key=f"exp_map_{target_layer}"
+            )
+
+            # Click-to-hide logic
+            if exp_map_event and exp_map_event.selection.get("points"):
+                clicked_pts = [pt["customdata"] for pt in exp_map_event.selection["points"] if "customdata" in pt]
+                if clicked_pts:
+                    for cp in clicked_pts:
+                        if cp not in st.session_state.hidden_export_items:
+                            st.session_state.hidden_export_items.append(cp)
+                    st.rerun()
+    else:
+        st.info("👈 Upload your Core Data in Tab 1 to unlock the PNG Exporter.")
