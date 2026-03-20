@@ -883,6 +883,25 @@ with tab4:
             new_hidden = [lbl for lbl in all_labels if lbl not in active_selections]
             other_hidden = [lbl for lbl in st.session_state.hidden_export_items if lbl not in all_labels]
             st.session_state.hidden_export_items = new_hidden + other_hidden
+            
+            st.markdown("---")
+            st.markdown("**3. Visual Settings**")
+            
+            # Determine default visual settings based on the layer
+            def_color = '#1f77b4'
+            def_shape = 'circle'
+            if target_layer == "Base Rows": 
+                def_color = '#d62728'
+            elif target_layer not in ["Base Columns", "Base Rows"]:
+                def_color = '#555555'
+                def_shape = current_df['Shape'].iloc[0] if not current_df.empty and 'Shape' in current_df.columns else 'star'
+
+            shape_options = ['circle', 'square', 'diamond', 'cross', 'x', 'triangle-up', 'triangle-down', 'star', 'hexagram']
+            if def_shape not in shape_options: def_shape = 'circle'
+
+            selected_color = st.color_picker("Layer Color", value=def_color)
+            selected_shape = st.selectbox("Layer Shape", options=shape_options, index=shape_options.index(def_shape))
+            label_size = st.slider("Label Size", 8, 32, 14)
 
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🔄 Reset All Hidden Statements", use_container_width=True):
@@ -893,24 +912,21 @@ with tab4:
             df_plot = current_df[current_df['Label'].isin(active_selections)]
 
             fig_exp = go.Figure()
-            
-            # Styling based on layer type
-            shape, color = 'circle', '#1f77b4'
-            if target_layer == "Base Rows": color = '#d62728'
-            elif target_layer not in ["Base Columns", "Base Rows"]:
-                shape = df_plot['Shape'].iloc[0] if not df_plot.empty else 'star'
-                color = '#555'
 
             if not df_plot.empty:
-                fig_exp.add_trace(go.Scatter(
-                    x=df_plot['x'], y=df_plot['y'], mode='markers+text',
-                    marker=dict(size=14, symbol=shape, color=color, line=dict(width=1, color='white')),
-                    text=df_plot['Label'], textposition="top center", customdata=df_plot['Label'],
-                    hovertemplate="<b>%{customdata}</b><extra></extra>",
-                    textfont=dict(size=14, color=color, family="Nunito")
-                ))
+                # Add traces point by point to allow individual label editing
+                for i, row in df_plot.iterrows():
+                    fig_exp.add_trace(go.Scatter(
+                        x=[row['x']], y=[row['y']], mode='markers+text',
+                        marker=dict(size=14, symbol=selected_shape, color=selected_color, line=dict(width=1, color='white')),
+                        text=[row['Label']], textposition="top center", customdata=[row['Label']],
+                        hovertemplate="<b>%{customdata}</b><extra></extra>",
+                        textfont=dict(size=label_size, color=selected_color, family="Nunito"),
+                        name=row['Label'],
+                        showlegend=False
+                    ))
 
-            # Lock axes and make background fully transparent
+            # Lock axes, make background fully transparent, and allow editing
             fig_exp.update_layout(
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
@@ -924,6 +940,10 @@ with tab4:
             exp_config = {
                 'displayModeBar': True,
                 'modeBarButtonsToRemove': ['zoom2d', 'pan2d', 'select2d', 'lasso2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d'],
+                'edits': {
+                    'annotationPosition': True,
+                    'annotationText': True
+                },
                 'toImageButtonOptions': {
                     'format': 'png',
                     'filename': f"{target_layer}_Layer_Export",
@@ -933,11 +953,11 @@ with tab4:
                 }
             }
 
-            st.info("📸 **Hover over the top right of the map and click the Camera Icon to download this layer.**")
+            st.info("📸 **Hover over the top right of the map and click the Camera Icon to download this layer.** You can click and drag labels to reposition them!")
 
             exp_map_event = st.plotly_chart(
                 fig_exp, use_container_width=True, config=exp_config,
-                on_select="rerun", selection_mode="points", key=f"exp_map_{target_layer}"
+                on_select="rerun", selection_mode="points", key=f"exp_map_{target_layer}_{label_size}_{selected_color}_{selected_shape}"
             )
 
             # Click-to-hide logic
