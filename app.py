@@ -913,6 +913,7 @@ with tab4:
             label_position = st.selectbox("Initial Label Position", ["Top", "Bottom", "Left", "Right", "Radial Outward (Auto-Spread)"], index=4)
             tail_length = st.slider("Connector Line Length", 10, 150, 40)
             
+            dot_size = st.slider("Dot Size", 4, 30, 10)
             label_size = st.slider("Label Size", 8, 32, 14)
             wrap_length = st.slider("Max Characters Per Line", 10, 150, 40)
 
@@ -953,7 +954,7 @@ with tab4:
 
                     fig_exp.add_trace(go.Scatter(
                         x=[row['x']], y=[row['y']], mode='markers',
-                        marker=dict(size=14, symbol=selected_shape, color=selected_color, line=dict(width=1, color='white')),
+                        marker=dict(size=dot_size, symbol=selected_shape, color=selected_color, line=dict(width=1, color='white')),
                         customdata=[row['Label']],
                         hovertemplate="<b>%{customdata}</b><extra></extra>",
                         name=row['Label'],
@@ -1011,7 +1012,7 @@ with tab4:
 
             exp_map_event = st.plotly_chart(
                 fig_exp, use_container_width=True, config=exp_config,
-                on_select="rerun", selection_mode="points", key=f"exp_map_{target_layer}_{label_size}_{selected_color}_{selected_shape}_{wrap_length}_{label_position}_{tail_length}"
+                on_select="rerun", selection_mode="points", key=f"exp_map_{target_layer}_{label_size}_{dot_size}_{selected_color}_{selected_shape}_{wrap_length}_{label_position}_{tail_length}"
             )
 
             # Click-to-hide logic
