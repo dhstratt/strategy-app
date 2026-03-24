@@ -871,18 +871,26 @@ with tab4:
             else: current_df = next(l for l in st.session_state.passive_data if not l.empty and l['LayerName'].iloc[0] == target_layer)
 
             all_labels = current_df['Label'].tolist()
-            visible_labels = [lbl for lbl in all_labels if lbl not in st.session_state.hidden_export_items]
 
             st.markdown("---")
             st.markdown("**2. Manage Statements**")
             st.caption("Single-click a dot on the map to remove it, or add/remove them from this list manually.")
             
-            # Bidirectional Sync Dropdown
-            active_selections = st.multiselect("Visible Items:", options=all_labels, default=visible_labels)
+            # --- Robust State Sync ---
+            ms_key = f"ms_visible_{target_layer}"
+            
+            def on_ms_change():
+                sel = st.session_state[ms_key]
+                hidden_in_layer = [l for l in all_labels if l not in sel]
+                hidden_other = [l for l in st.session_state.hidden_export_items if l not in all_labels]
+                st.session_state.hidden_export_items = hidden_in_layer + hidden_other
 
-            new_hidden = [lbl for lbl in all_labels if lbl not in active_selections]
-            other_hidden = [lbl for lbl in st.session_state.hidden_export_items if lbl not in all_labels]
-            st.session_state.hidden_export_items = new_hidden + other_hidden
+            desired_selections = [lbl for lbl in all_labels if lbl not in st.session_state.hidden_export_items]
+            if ms_key not in st.session_state or st.session_state[ms_key] != desired_selections:
+                st.session_state[ms_key] = desired_selections
+
+            active_selections = st.multiselect("Visible Items:", options=all_labels, key=ms_key, on_change=on_ms_change)
+            # -------------------------
             
             st.markdown("---")
             st.markdown("**3. Visual Settings**")
@@ -914,18 +922,17 @@ with tab4:
                 st.rerun()
 
         with exp_main:
-            df_plot = current_df[current_df['Label'].isin(active_selections)]
-
             fig_exp = go.Figure()
             annotations = []
 
-            if not df_plot.empty:
+            if not current_df.empty:
                 # Calculate cluster center for radial spread
-                cx = df_plot['x'].mean() if not df_plot.empty else 0
-                cy = df_plot['y'].mean() if not df_plot.empty else 0
+                cx = current_df['x'].mean() if not current_df.empty else 0
+                cy = current_df['y'].mean() if not current_df.empty else 0
 
-                # Add traces point by point to allow individual dot clicking
-                for i, row in df_plot.iterrows():
+                # Add traces point by point (hidden items are just toggled visible=False to preserve index order)
+                for i, row in current_df.iterrows():
+                    is_visible = row['Label'] in active_selections
                     wrapped_label = "<br>".join(textwrap.wrap(str(row['Label']), width=wrap_length))
                     
                     # Calculate label starting position offsets (ax, ay)
@@ -950,7 +957,8 @@ with tab4:
                         customdata=[row['Label']],
                         hovertemplate="<b>%{customdata}</b><extra></extra>",
                         name=row['Label'],
-                        showlegend=False
+                        showlegend=False,
+                        visible=True if is_visible else False
                     ))
                     
                     # Convert labels to draggable annotations with connector lines
@@ -966,7 +974,8 @@ with tab4:
                         arrowcolor=selected_color,
                         ax=ax_val,          # Horizontal tail position
                         ay=ay_val,          # Vertical tail position
-                        font=dict(size=label_size, color=selected_color, family="Quicksand")
+                        font=dict(size=label_size, color=selected_color, family="Quicksand"),
+                        visible=True if is_visible else False
                     ))
 
             # Lock axes, make background fully transparent, and apply draggable annotations
@@ -1009,9 +1018,12 @@ with tab4:
             if exp_map_event and exp_map_event.selection.get("points"):
                 clicked_pts = [pt["customdata"] for pt in exp_map_event.selection["points"] if "customdata" in pt]
                 if clicked_pts:
+                    changed = False
                     for cp in clicked_pts:
                         if cp not in st.session_state.hidden_export_items:
                             st.session_state.hidden_export_items.append(cp)
-                    st.rerun()
+                            changed = True
+                    if changed:
+                        st.rerun()
     else:
         st.info("👈 Upload your Core Data in Tab 1 to unlock the PNG Exporter.")
