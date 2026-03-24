@@ -121,8 +121,22 @@ def clean_df(df_input, is_core=False):
             st.session_state.exact_universe_found = False
             st.session_state.universe_size = 258000.0
     
-    mask = ~df.index.astype(str).str.contains("Study Universe|Total|Base|Sample", case=False, regex=True)
-    valid_cols = [c for c in df.columns if "study universe" not in str(c).lower() and "total" not in str(c).lower()]
+    # STRICTER CLEANING: Only drop exact matches for generic aggregate columns, not anything containing the word "total"
+    valid_cols = []
+    for c in df.columns:
+        cl = str(c).strip().lower()
+        if "study universe" in cl or cl in ["total", "base", "sample", "grand total"]:
+            continue
+        valid_cols.append(c)
+        
+    mask = []
+    for r in df.index:
+        rl = str(r).strip().lower()
+        if "study universe" in rl or rl in ["total", "base", "sample", "grand total"]:
+            mask.append(False)
+        else:
+            mask.append(True)
+
     return df.loc[mask, valid_cols]
 
 def rotate_coords(df_to_rot, angle_deg):
@@ -642,7 +656,7 @@ with tab2:
                 for c in range(1, len(metric_r)):
                     if "Weighted" in str(metric_r[c]):
                         h_str = str(header_r[c])
-                        if "Universe" not in h_str and "Total" not in h_str and h_str != 'nan': 
+                        if "Universe" not in h_str and h_str.strip().lower() not in ["total", "base"] and h_str != 'nan': 
                             c_idx.append(c); h.append(h_str)
                 
                 df_c = data_r.iloc[:, c_idx]; df_c.columns = h
@@ -678,7 +692,7 @@ with tab2:
                     val = str(metric_r[c]).lower()
                     if "%" in val or "target" in val or "detail" in val or "row" in val or "horiz" in val or "vert" in val:
                         s_str = str(statement_r[c])
-                        if "Universe" not in s_str and "Total" not in s_str and s_str != 'nan':
+                        if "Universe" not in s_str and s_str.strip().lower() not in ["total", "base"] and s_str != 'nan':
                             c_idx.append(c); h.append(s_str)
                 
                 df_c = data_r.iloc[:, c_idx]; df_c.columns = h
