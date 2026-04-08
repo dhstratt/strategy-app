@@ -59,7 +59,12 @@ if 'processed_data' not in st.session_state: st.session_state.processed_data = F
 if 'passive_data' not in st.session_state: st.session_state.passive_data = [] 
 if 'universe_size' not in st.session_state: st.session_state.universe_size = 258000.0
 if 'exact_universe_found' not in st.session_state: st.session_state.exact_universe_found = False
-# Internal state 'df_brands' kept for backward compatibility with older .use files, but functionally means 'df_cols'
+
+if 'df_brands_master' not in st.session_state: st.session_state.df_brands_master = pd.DataFrame()
+if 'df_attrs_master' not in st.session_state: st.session_state.df_attrs_master = pd.DataFrame()
+if 'max_dim' not in st.session_state: st.session_state.max_dim = 2
+if 's_vals' not in st.session_state: st.session_state.s_vals = []
+
 if 'df_brands' not in st.session_state: st.session_state.df_brands = pd.DataFrame()
 if 'df_attrs' not in st.session_state: st.session_state.df_attrs = pd.DataFrame()
 if 'accuracy' not in st.session_state: st.session_state.accuracy = 0
@@ -121,7 +126,6 @@ def clean_df(df_input, is_core=False):
             st.session_state.exact_universe_found = False
             st.session_state.universe_size = 258000.0
     
-    # STRICTER CLEANING: Only drop exact matches for generic aggregate columns, not anything containing the word "total"
     valid_cols = []
     for c in df.columns:
         cl = str(c).strip().lower()
@@ -205,9 +209,28 @@ def process_data(uploaded_file, passive_files, passive_configs):
             E[E < 1e-9] = 1e-9; R = (P - E) / np.sqrt(E); U, s, Vh = np.linalg.svd(R, full_matrices=False)
             row_coords = (U * s) / np.sqrt(r[:, np.newaxis]); col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
             
-            st.session_state.df_brands = pd.DataFrame(col_coords[:, :2], columns=['x','y']); st.session_state.df_brands['Label'] = df_math.columns
-            st.session_state.df_attrs = pd.DataFrame(row_coords[:, :2], columns=['x','y']); st.session_state.df_attrs['Label'] = df_math.index
-            st.session_state.df_attrs['Weight'] = df_math.sum(axis=1).values 
+            # Save ALL axes up to 5 max
+            max_dim = min(5, len(s))
+            st.session_state.max_dim = max_dim
+            st.session_state.s_vals = s
+            
+            df_b_m = pd.DataFrame(col_coords[:, :max_dim], columns=[f'Dim{i+1}' for i in range(max_dim)])
+            df_b_m['Label'] = df_math.columns
+            st.session_state.df_brands_master = df_b_m
+            
+            df_a_m = pd.DataFrame(row_coords[:, :max_dim], columns=[f'Dim{i+1}' for i in range(max_dim)])
+            df_a_m['Label'] = df_math.index
+            df_a_m['Weight'] = df_math.sum(axis=1).values 
+            st.session_state.df_attrs_master = df_a_m
+
+            # Default backwards compatibility to Axis 1 and 2
+            st.session_state.df_brands = df_b_m.copy()
+            st.session_state.df_brands['x'] = df_b_m['Dim1']
+            st.session_state.df_brands['y'] = df_b_m['Dim2'] if max_dim > 1 else df_b_m['Dim1']
+
+            st.session_state.df_attrs = df_a_m.copy()
+            st.session_state.df_attrs['x'] = df_a_m['Dim1']
+            st.session_state.df_attrs['y'] = df_a_m['Dim2'] if max_dim > 1 else df_a_m['Dim1']
             
             eig_vals = np.array(s)**2
             total_var = np.sum(eig_vals)
@@ -242,8 +265,10 @@ def process_data(uploaded_file, passive_files, passive_configs):
                         p_aligned = pd.DataFrame(0.0, index=p_c.index, columns=df_math.columns)
                         for orig_col, norm_col in zip(p_c.columns, p_cols_norm):
                             if norm_col in col_mapper: p_aligned.iloc[:, col_mapper[norm_col]] = p_c[orig_col].values
-                        proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:,:2] / s[:2]
-                        res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
+                        proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ col_coords[:, :max_dim] / s[:max_dim]
+                        res = pd.DataFrame(proj, columns=[f'Dim{k+1}' for k in range(max_dim)])
+                        res['x'] = res['Dim1']; res['y'] = res['Dim2'] if max_dim > 1 else res['Dim1']
+                        res['Label'] = p_c.index; res['Weight'] = p_c.sum(axis=1).values; res['Shape'] = 'star'
                     else:
                         status_msg = "❌ Force 'Rows' failed: No matching columns found."
                 else:
@@ -252,8 +277,10 @@ def process_data(uploaded_file, passive_files, passive_configs):
                         p_aligned = pd.DataFrame(0.0, index=df_math.index, columns=p_c.columns)
                         for orig_row, norm_row in zip(p_c.index, p_idx_norm):
                             if norm_row in row_mapper: p_aligned.iloc[row_mapper[norm_row], :] = p_c.loc[orig_row].values
-                        proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:,:2] / s[:2]
-                        res = pd.DataFrame(proj, columns=['x','y']); res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
+                        proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ row_coords[:, :max_dim] / s[:max_dim]
+                        res = pd.DataFrame(proj, columns=[f'Dim{k+1}' for k in range(max_dim)])
+                        res['x'] = res['Dim1']; res['y'] = res['Dim2'] if max_dim > 1 else res['Dim1']
+                        res['Label'] = p_c.columns; res['Weight'] = p_c.sum(axis=0).values; res['Shape'] = 'diamond'
                     else:
                         status_msg = "❌ Force 'Columns' failed: No matching rows found."
                 
@@ -294,7 +321,9 @@ with tab1:
                     'df_brands': st.session_state.df_brands, 'df_attrs': st.session_state.df_attrs, 
                     'passive_data': st.session_state.passive_data, 'accuracy': st.session_state.accuracy, 
                     'universe_size': st.session_state.universe_size, 'exact_universe_found': st.session_state.exact_universe_found,
-                    'corr_matrix': st.session_state.corr_matrix, 'saved_mindsets': st.session_state.saved_mindsets 
+                    'corr_matrix': st.session_state.corr_matrix, 'saved_mindsets': st.session_state.saved_mindsets,
+                    'df_brands_master': st.session_state.df_brands_master, 'df_attrs_master': st.session_state.df_attrs_master,
+                    'max_dim': st.session_state.get('max_dim', 2), 's_vals': st.session_state.get('s_vals', [])
                 }
                 buffer = io.BytesIO(); pickle.dump(proj_dict, buffer); buffer.seek(0)
                 st.download_button("Save Project 📥", buffer, f"{proj_name}.use")
@@ -345,9 +374,27 @@ with tab1:
 
         st.divider()
         st.header("🏷️ Map Controls")
-        f_col_highlight = "None"
-        if st.session_state.processed_data:
+        
+        if st.session_state.processed_data and 'max_dim' in st.session_state:
+            st.markdown("**Map Dimensions**")
+            col_ax1, col_ax2 = st.columns(2)
+            with col_ax1: x_dim = st.selectbox("X-Axis", range(1, st.session_state.max_dim + 1), index=0)
+            with col_ax2: y_dim = st.selectbox("Y-Axis", range(1, st.session_state.max_dim + 1), index=1 if st.session_state.max_dim > 1 else 0)
+            
+            # Dynamically set x and y coordinates from master memory
+            st.session_state.df_brands['x'] = st.session_state.df_brands_master[f'Dim{x_dim}']
+            st.session_state.df_brands['y'] = st.session_state.df_brands_master[f'Dim{y_dim}']
+            st.session_state.df_attrs['x'] = st.session_state.df_attrs_master[f'Dim{x_dim}']
+            st.session_state.df_attrs['y'] = st.session_state.df_attrs_master[f'Dim{y_dim}']
+            
+            for i, p in enumerate(st.session_state.passive_data):
+                if not p.empty and f'Dim{x_dim}' in p.columns:
+                    st.session_state.passive_data[i]['x'] = p[f'Dim{x_dim}']
+                    st.session_state.passive_data[i]['y'] = p[f'Dim{y_dim}']
+                    
             f_col_highlight = st.selectbox("Highlight Column:", ["None"] + sorted(st.session_state.df_brands['Label'].tolist(), key=str.casefold))
+        else:
+            f_col_highlight = "None"
 
         lbl_cols = st.checkbox("Column Labels", True)
         lbl_rows = st.checkbox("Row Labels", True)
@@ -493,7 +540,8 @@ with tab1:
         st.divider()
         st.header("🔄 View Settings")
         map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
-        map_height = st.slider("Map Height (Fit to screen)", 500, 1200, 650, step=50)
+        # --- INCREASED DEFAULT AND MAX HEIGHT ---
+        map_height = st.slider("Map Height (Fit to screen)", 600, 1600, 850, step=50)
 
     # --- RENDER ---
     if st.session_state.processed_data:
