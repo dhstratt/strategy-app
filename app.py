@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import io
 import textwrap
+import math
 
 # --- CONFIGURATION & STYLING ---
 st.set_page_config(layout="wide", page_title="Custom CA Studio")
@@ -56,7 +57,7 @@ def process_ca(uploaded_file):
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[,$%]', '', regex=True), errors='coerce')
         df = df.fillna(0)
         
-        # Drop "Universe/Total" rows if they exist so they don't anchor the map
+        # Drop "Universe/Total" rows if they exist so they don't anchor the map vertically
         u_idx = df.index.astype(str).str.contains("Study Universe|Total Population|Grand Total", case=False, regex=True)
         df_math = df[~u_idx].copy()
         
@@ -244,22 +245,24 @@ if st.session_state.processed:
             tail_len = st.slider("Connector Line Length", 10, 100, 30)
             lbl_size = st.slider("Font Size", 8, 24, 12)
         with t_col4:
+            # NEW FEATURE: Base Anchor Highlighter
+            anchor_col = st.selectbox("Highlight Base/Anchor Column (Plots as ⭐️)", ["None"] + sorted(list(df_b['Label'])))
             wrap_len = st.slider("Max Chars Per Line", 15, 100, 35)
             map_height = st.slider("Canvas Height", 500, 1200, 750, step=50)
-            if st.button("🔄 Unhide All Labels", use_container_width=True):
-                st.session_state.hidden_items = []
-                st.rerun()
+
+    st.button("🔄 Unhide All Labels", on_click=lambda: st.session_state.update({'hidden_items': []}))
 
     # --- BUILD FIGURE ---
     fig = go.Figure()
     annotations = []
 
     # Helper for adding traces
-    def add_layer_to_fig(df_layer, color, shape, size, name):
+    def add_layer_to_fig(df_layer, color, shape, size, name, is_anchor=False):
         if df_layer.empty: return
         
         # Calculate cluster center for radial spread
-        cx, cy = df_layer['x'].mean(), df_layer['y'].mean()
+        cx = float(df_layer['x'].mean())
+        cy = float(df_layer['y'].mean())
         
         for _, row in df_layer.iterrows():
             is_visible = row['Label'] not in st.session_state.hidden_items
@@ -270,29 +273,46 @@ if st.session_state.processed:
             elif lbl_pos == "Left": ax, ay = -tail_len, 0
             elif lbl_pos == "Right": ax, ay = tail_len, 0
             else: # Radial
-                dx, dy = row['x'] - cx, row['y'] - cy
-                dist = math.hypot(dx, dy)
-                if dist < 1e-5: ax, ay = 0, -tail_len
-                else: ax, ay = (dx/dist)*tail_len, -(dy/dist)*tail_len
+                try:
+                    dx = float(row['x']) - cx
+                    dy = float(row['y']) - cy
+                    dist = (dx**2 + dy**2)**0.5
+                    
+                    if dist > 1e-5: 
+                        ax, ay = (dx/dist)*tail_len, -(dy/dist)*tail_len
+                    else: 
+                        ax, ay = 0, -tail_len
+                except Exception:
+                    ax, ay = 0, -tail_len
 
             # Invisible scatter point (for click-to-hide)
             fig.add_trace(go.Scatter(
                 x=[row['x']], y=[row['y']], mode='markers',
-                marker=dict(size=size, symbol=shape, color=color, line=dict(width=1, color='white')),
+                marker=dict(size=size, symbol=shape, color=color, line=dict(width=1 if not is_anchor else 2, color='white' if not is_anchor else '#333')),
                 customdata=[row['Label']], hovertemplate="<b>%{customdata}</b><extra></extra>",
                 name=name, showlegend=False, visible=True if is_visible else False
             ))
             
-            # Draggable annotation
+            # Draggable annotation (Make anchor text bold and larger)
+            font_dict = dict(size=lbl_size + (4 if is_anchor else 0), color=color, family="Quicksand")
             annotations.append(dict(
                 x=row['x'], y=row['y'], xref="x", yref="y",
-                text=wrapped_label, showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=color,
-                ax=ax, ay=ay, font=dict(size=lbl_size, color=color, family="Quicksand"),
+                text=f"<b>{wrapped_label}</b>" if is_anchor else wrapped_label, 
+                showarrow=True, arrowhead=0, arrowwidth=1 if not is_anchor else 2, arrowcolor=color,
+                ax=ax, ay=ay, font=font_dict,
                 visible=True if is_visible else False
             ))
 
-    # Add core data
-    add_layer_to_fig(df_b, col_color, col_shape, col_size, "Columns")
+    # Add core data, separating out the anchor if one is selected
+    if anchor_col != "None":
+        df_b_normal = df_b[df_b['Label'] != anchor_col]
+        df_b_anchor = df_b[df_b['Label'] == anchor_col]
+        add_layer_to_fig(df_b_normal, col_color, col_shape, col_size, "Columns")
+        # Plot the anchor as a giant black star
+        add_layer_to_fig(df_b_anchor, "#111111", "star", col_size + 12, "Base Anchor", is_anchor=True)
+    else:
+        add_layer_to_fig(df_b, col_color, col_shape, col_size, "Columns")
+        
     add_layer_to_fig(df_a, row_color, row_shape, row_size, "Rows")
     
     # Add passives
