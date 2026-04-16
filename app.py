@@ -296,7 +296,7 @@ def process_data(uploaded_file, passive_files, passive_configs):
 # ==========================================
 # UI
 # ==========================================
-tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Strategic Map", "🧹 MRI Cleaner", "📟 Count Code Editor", "📥 PNG Exporter"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🗺️ Strategic Map", "🧹 MRI Cleaner", "📟 Count Code Editor", "📥 PNG Exporter", "📊 Custom CA Builder"])
 
 with tab1:
     st.title("🗺️ The Consumer Landscape")
@@ -540,7 +540,6 @@ with tab1:
         st.divider()
         st.header("🔄 View Settings")
         map_rotation = st.slider("Map Rotation", 0, 360, 0, step=90)
-        # --- INCREASED DEFAULT AND MAX HEIGHT ---
         map_height = st.slider("Map Height (Fit to screen)", 600, 1600, 850, step=50)
 
     # --- RENDER ---
@@ -1090,3 +1089,132 @@ with tab4:
                         st.rerun()
     else:
         st.info("👈 Upload your Core Data in Tab 1 to unlock the PNG Exporter.")
+
+with tab5:
+    st.header("📊 Custom CA Builder")
+    st.markdown("Bypass the complex MRI tools and instantly map any custom crosstab (like Qualtrics, Decipher, or internal data). Just make sure your CSV follows the Golden Rules (Rows = Attributes, Columns = Brands).")
+
+    custom_file = st.file_uploader("Upload Custom CSV (e.g. Custom_CA_Format.csv)", type=["csv", "xlsx", "xls"], key="custom_upload")
+
+    if custom_file:
+        try:
+            if custom_file.name.endswith('.csv'):
+                df_custom = pd.read_csv(custom_file)
+            else:
+                df_custom = pd.read_excel(custom_file)
+            
+            # Standard cleanup for custom data
+            label_col = df_custom.columns[0]
+            df_custom = df_custom.set_index(label_col)
+            
+            # Look for Study Universe or Total Population and extract it
+            u_idx = df_custom.index.astype(str).str.contains("Study Universe|Total Population", case=False, regex=True)
+            if any(u_idx):
+                st.session_state.universe_size = float(df_custom[u_idx].iloc[0].sum())
+                df_custom = df_custom[~u_idx] # Remove it from the map so it doesn't anchor the center
+            
+            # Convert all data to numeric and clean out commas/symbols
+            for col in df_custom.columns:
+                df_custom[col] = pd.to_numeric(df_custom[col].astype(str).str.replace(r'[,$%]', '', regex=True), errors='coerce')
+            df_custom = df_custom.fillna(0)
+            
+            # Drop any completely empty rows
+            df_math = df_custom.loc[(df_custom != 0).any(axis=1)]
+
+            if not df_math.empty:
+                # Core CA Math
+                N = df_math.values
+                matrix_sum = N.sum()
+                if matrix_sum > 0:
+                    P = N / matrix_sum
+                    r = P.sum(axis=1)
+                    c = P.sum(axis=0)
+                    E = np.outer(r, c)
+                    E[E < 1e-9] = 1e-9
+                    R = (P - E) / np.sqrt(E)
+                    U, s, Vh = np.linalg.svd(R, full_matrices=False)
+                    
+                    # Capture up to 5 dimensions
+                    max_dim = min(5, len(s))
+                    st.session_state.max_dim = max_dim
+                    st.session_state.s_vals = s
+
+                    col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
+                    row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
+                    
+                    # Save to global memory for the PNG Exporter
+                    df_b_m = pd.DataFrame(col_coords[:, :max_dim], columns=[f'Dim{i+1}' for i in range(max_dim)])
+                    df_b_m['Label'] = df_math.columns
+                    st.session_state.df_brands_master = df_b_m
+                    
+                    df_a_m = pd.DataFrame(row_coords[:, :max_dim], columns=[f'Dim{i+1}' for i in range(max_dim)])
+                    df_a_m['Label'] = df_math.index
+                    df_a_m['Weight'] = df_math.sum(axis=1).values 
+                    st.session_state.df_attrs_master = df_a_m
+
+                    st.session_state.df_brands = df_b_m.copy()
+                    st.session_state.df_brands['x'] = df_b_m['Dim1']
+                    st.session_state.df_brands['y'] = df_b_m['Dim2'] if max_dim > 1 else df_b_m['Dim1']
+
+                    st.session_state.df_attrs = df_a_m.copy()
+                    st.session_state.df_attrs['x'] = df_a_m['Dim1']
+                    st.session_state.df_attrs['y'] = df_a_m['Dim2'] if max_dim > 1 else df_a_m['Dim1']
+                    
+                    # Clear out MRI specific artifacts
+                    st.session_state.passive_data = [] 
+                    st.session_state.processed_data = True
+                    
+                    eig_vals = np.array(s)**2
+                    total_var = np.sum(eig_vals)
+                    var_1 = (eig_vals[0]/total_var)*100 if len(eig_vals)>0 else 0
+                    var_2 = (eig_vals[1]/total_var)*100 if len(eig_vals)>1 else 0
+                    
+                    st.success(f"✅ Custom Data Mapped Successfully! Map Stability (Axis 1+2): {var_1+var_2:.1f}%")
+                    
+                    st.divider()
+                    st.markdown("**🔄 Custom Map Settings**")
+                    c_col1, c_col2 = st.columns(2)
+                    with c_col1: map_rot_custom = st.slider("Map Rotation", 0, 360, 0, step=90, key="rot_custom")
+                    with c_col2: map_height_custom = st.slider("Map Height", 500, 1600, 700, step=50, key="height_custom")
+                    
+                    # Apply Rotation
+                    df_b_plot = rotate_coords(st.session_state.df_brands.copy(), map_rot_custom)
+                    df_a_plot = rotate_coords(st.session_state.df_attrs.copy(), map_rot_custom)
+
+                    # Native Plotly render for this custom tab
+                    fig_custom = go.Figure()
+                    
+                    # Brand / Column Traces
+                    fig_custom.add_trace(go.Scatter(
+                        x=df_b_plot['x'], y=df_b_plot['y'], mode='markers+text',
+                        marker=dict(size=16, color='#1f77b4', line=dict(width=1, color='white')),
+                        text=df_b_plot['Label'], textposition="top center", customdata=df_b_plot['Label'],
+                        hovertemplate="<b>%{customdata}</b><extra></extra>", textfont=dict(size=14, color='#1f77b4', family="Quicksand"), name="Columns"
+                    ))
+                    
+                    # Attribute / Row Traces with text wrapping
+                    wrapped_attrs = ["<br>".join(textwrap.wrap(str(lbl), width=40)) for lbl in df_a_plot['Label']]
+                    fig_custom.add_trace(go.Scatter(
+                        x=df_a_plot['x'], y=df_a_plot['y'], mode='markers+text',
+                        marker=dict(size=10, color='#d62728', line=dict(width=1, color='white')),
+                        text=wrapped_attrs, textposition="bottom center", customdata=df_a_plot['Label'],
+                        hovertemplate="<b>%{customdata}</b><extra></extra>", textfont=dict(size=11, color='#d62728', family="Quicksand"), name="Rows"
+                    ))
+                    
+                    # Dynamically center and scale the grid
+                    x_vals = df_b_plot['x'].tolist() + df_a_plot['x'].tolist()
+                    y_vals = df_b_plot['y'].tolist() + df_a_plot['y'].tolist()
+                    max_val = max(np.max(np.abs(x_vals)), np.max(np.abs(y_vals))) * 1.15
+                    
+                    fig_custom.update_layout(
+                        template="plotly_white", height=map_height_custom, margin=dict(l=0, r=0, t=30, b=0),
+                        xaxis=dict(range=[-max_val, max_val], zeroline=True, zerolinecolor='lightgray', showgrid=False, showticklabels=False),
+                        yaxis=dict(range=[-max_val, max_val], zeroline=True, zerolinecolor='lightgray', showgrid=False, showticklabels=False, scaleanchor="x", scaleratio=1),
+                        hoverlabel=dict(bgcolor="white", font_size=14, font_family="Quicksand"), showlegend=True
+                    )
+                    
+                    st.plotly_chart(fig_custom, use_container_width=True, config={'displayModeBar': True, 'scrollZoom': True})
+                    
+                    st.info("💡 **Tip:** Your custom data is now loaded into the app's global memory! You can head over to the **📥 PNG Exporter** tab to fully customize, drag labels around, and download this map for your deck.")
+        except Exception as e:
+            st.error(f"Error processing custom file: {e}")
