@@ -188,10 +188,14 @@ with st.sidebar:
         if st.session_state.passive_layers:
             st.markdown("**Active Layers:**")
             for i, layer in enumerate(st.session_state.passive_layers):
-                st.markdown(f"🔹 {layer['LayerName'].iloc[0]}")
-                if st.button(f"Remove", key=f"del_l_{i}"):
-                    st.session_state.passive_layers.pop(i)
-                    st.rerun()
+                col_tog, col_del = st.columns([4, 1])
+                with col_tog:
+                    is_vis = st.checkbox(f"👁️ {layer['LayerName'].iloc[0]}", value=layer['Visible'].iloc[0], key=f"vis_{i}")
+                    st.session_state.passive_layers[i]['Visible'] = is_vis
+                with col_del:
+                    if st.button("🗑️", key=f"del_l_{i}", help="Remove Layer"):
+                        st.session_state.passive_layers.pop(i)
+                        st.rerun()
 
 # --- MAIN CANVAS ---
 if st.session_state.processed:
@@ -233,10 +237,12 @@ if st.session_state.processed:
     with st.expander("🎨 Visual & Export Settings", expanded=True):
         t_col1, t_col2, t_col3, t_col4 = st.columns(4)
         with t_col1:
+            show_cols = st.checkbox("Show Columns", value=True)
             col_color = st.color_picker("Column Color", "#1f77b4")
             col_shape = st.selectbox("Column Shape", ['circle', 'square', 'diamond', 'star'], index=0)
             col_size = st.slider("Column Dot Size", 5, 30, 16)
         with t_col2:
+            show_rows = st.checkbox("Show Rows", value=True)
             row_color = st.color_picker("Row Color", "#d62728")
             row_shape = st.selectbox("Row Shape", ['circle', 'square', 'diamond', 'star'], index=1)
             row_size = st.slider("Row Dot Size", 5, 30, 10)
@@ -304,21 +310,23 @@ if st.session_state.processed:
             ))
 
     # Add core data, separating out the anchor if one is selected
-    if anchor_col != "None":
-        df_b_normal = df_b[df_b['Label'] != anchor_col]
-        df_b_anchor = df_b[df_b['Label'] == anchor_col]
-        add_layer_to_fig(df_b_normal, col_color, col_shape, col_size, "Columns")
-        # Plot the anchor as a giant black star
-        add_layer_to_fig(df_b_anchor, "#111111", "star", col_size + 12, "Base Anchor", is_anchor=True)
-    else:
-        add_layer_to_fig(df_b, col_color, col_shape, col_size, "Columns")
-        
-    add_layer_to_fig(df_a, row_color, row_shape, row_size, "Rows")
+    if show_cols:
+        if anchor_col != "None":
+            df_b_normal = df_b[df_b['Label'] != anchor_col]
+            df_b_anchor = df_b[df_b['Label'] == anchor_col]
+            add_layer_to_fig(df_b_normal, col_color, col_shape, col_size, "Columns")
+            # Plot the anchor as a giant black star
+            add_layer_to_fig(df_b_anchor, "#111111", "star", col_size + 12, "Base Anchor", is_anchor=True)
+        else:
+            add_layer_to_fig(df_b, col_color, col_shape, col_size, "Columns")
+            
+    if show_rows:
+        add_layer_to_fig(df_a, row_color, row_shape, row_size, "Rows")
     
     # Add passives
     p_colors = ['#2ca02c', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
     for i, p_df in enumerate(df_p_list):
-        if p_df.empty: continue
+        if p_df.empty or not p_df['Visible'].iloc[0]: continue
         c = p_colors[i % len(p_colors)]
         s = p_df['Shape'].iloc[0]
         n = p_df['LayerName'].iloc[0]
@@ -333,21 +341,22 @@ if st.session_state.processed:
     max_val = max(np.max(np.abs(all_x)), np.max(np.abs(all_y))) * 1.15 if all_x else 1
 
     fig.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', dragmode=False,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', dragmode='pan',
         margin=dict(l=0, r=0, t=0, b=0), height=map_height,
-        xaxis=dict(range=[-max_val, max_val], fixedrange=True, zeroline=True, zerolinecolor='#eee', showgrid=False, showticklabels=False),
-        yaxis=dict(range=[-max_val, max_val], fixedrange=True, zeroline=True, zerolinecolor='#eee', showgrid=False, showticklabels=False, scaleanchor="x", scaleratio=1),
+        xaxis=dict(range=[-max_val, max_val], fixedrange=False, zeroline=True, zerolinecolor='#eee', showgrid=False, showticklabels=False),
+        yaxis=dict(range=[-max_val, max_val], fixedrange=False, zeroline=True, zerolinecolor='#eee', showgrid=False, showticklabels=False, scaleanchor="x", scaleratio=1),
         annotations=annotations
     )
 
     exp_config = {
         'displayModeBar': True,
-        'modeBarButtonsToRemove': ['zoom2d', 'pan2d', 'select2d', 'lasso2d', 'zoomIn2d', 'zoomOut2d', 'autoScale2d'],
+        'modeBarButtonsToRemove': ['select2d', 'lasso2d'],
+        'scrollZoom': True,
         'edits': {'annotationTail': True, 'annotationText': True, 'annotationPosition': False},
         'toImageButtonOptions': {'format': 'png', 'filename': "CA_Export", 'height': 720, 'width': 1280, 'scale': 3}
     }
 
-    st.info("💡 **Instructions:** Click and drag any text label to un-clutter the map. Click directly on a dot to hide it entirely. Hover over the top right to download a high-res 16:9 PNG for PowerPoint.")
+    st.info("💡 **Instructions:** You can now zoom and pan around the map! Click and drag any text label to un-clutter the map. Click directly on a dot to hide it entirely. Hover over the top right to download a high-res 16:9 PNG for PowerPoint. (Tip: Use the 'Reset Axes' house icon before exporting so your images stack perfectly in PPT!)")
 
     # Render Chart
     map_event = st.plotly_chart(
