@@ -32,7 +32,8 @@ if 'map_rot' not in st.session_state: st.session_state.map_rot = 0
 
 # --- CORE MATH FUNCTIONS ---
 def normalize_str(s_series):
-    return s_series.astype(str).str.lower().str.replace(r'[^\w\s]', '', regex=True).str.strip()
+    # Aggressively strips ALL punctuation and ALL whitespace so column mapping never fails
+    return s_series.astype(str).str.lower().str.replace(r'[^\w\s]', '', regex=True).str.replace(r'\s+', '', regex=True).str.strip()
 
 def rotate_coords(df, angle_deg):
     theta = np.radians(angle_deg)
@@ -55,9 +56,15 @@ def process_ca(uploaded_file):
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[,$%]', '', regex=True), errors='coerce')
         df = df.fillna(0)
         
-        # Purge any "Total" or "Universe" columns and rows completely
-        u_idx_row = df.index.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market", case=False, regex=True)
-        u_idx_col = df.columns.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market", case=False, regex=True)
+        # AGGRESSIVE SCRUBBER: Destroy completely blank rows/cols and ghost "Unnamed/NaN" tags
+        df = df.dropna(how='all', axis=0).dropna(how='all', axis=1)
+        clean_cols = [c for c in df.columns if "unnamed" not in str(c).lower() and str(c).strip() != ""]
+        df = df[clean_cols]
+        clean_rows = [r for r in df.index if "unnamed" not in str(r).lower() and str(r).lower() != "nan" and str(r).strip() != ""]
+        df = df.loc[clean_rows]
+        
+        u_idx_row = df.index.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market|Total", case=False, regex=True)
+        u_idx_col = df.columns.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market|Total", case=False, regex=True)
         
         df_math = df.loc[~u_idx_row, ~u_idx_col].copy()
         df_math = df_math.loc[(df_math != 0).any(axis=1)]
@@ -74,18 +81,23 @@ def process_ca(uploaded_file):
         R = (P - E) / np.sqrt(E)
         U, s, Vh = np.linalg.svd(R, full_matrices=False)
         
-        st.session_state.max_dim = min(5, len(s))
-        st.session_state.s_vals = s
+        max_dim = min(5, len(s))
+        st.session_state.max_dim = max_dim
+        st.session_state.s_vals = s[:max_dim]
         
-        row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
-        col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
+        # Safe Slicing to prevent Array Broadcast Shape Errors
+        U = U[:, :max_dim]
+        s_sliced = s[:max_dim]
+        Vh = Vh[:max_dim, :]
         
-        # Store clean Master Data
-        df_b_master = pd.DataFrame(col_coords[:, :st.session_state.max_dim], columns=[f'Dim{i+1}' for i in range(st.session_state.max_dim)])
+        row_coords = (U * s_sliced) / np.sqrt(r[:, np.newaxis])
+        col_coords = (Vh.T * s_sliced) / np.sqrt(c[:, np.newaxis])
+        
+        df_b_master = pd.DataFrame(col_coords, columns=[f'Dim{i+1}' for i in range(max_dim)])
         df_b_master['Label'] = df_math.columns.values
         st.session_state.df_b_master = df_b_master
         
-        df_a_master = pd.DataFrame(row_coords[:, :st.session_state.max_dim], columns=[f'Dim{i+1}' for i in range(st.session_state.max_dim)])
+        df_a_master = pd.DataFrame(row_coords, columns=[f'Dim{i+1}' for i in range(max_dim)])
         df_a_master['Label'] = df_math.index.values
         st.session_state.df_a_master = df_a_master
         
@@ -105,6 +117,13 @@ def process_passive(file, name, mode):
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[,$%]', '', regex=True), errors='coerce')
         df = df.fillna(0)
         
+        # AGGRESSIVE SCRUBBER: Destroy completely blank rows/cols and ghost "Unnamed/NaN" tags
+        df = df.dropna(how='all', axis=0).dropna(how='all', axis=1)
+        clean_cols = [c for c in df.columns if "unnamed" not in str(c).lower() and str(c).strip() != ""]
+        df = df[clean_cols]
+        clean_rows = [r for r in df.index if "unnamed" not in str(r).lower() and str(r).lower() != "nan" and str(r).strip() != ""]
+        df = df.loc[clean_rows]
+        
         base_cols_norm = normalize_str(st.session_state.df_b_master['Label'])
         base_idx_norm = normalize_str(st.session_state.df_a_master['Label'])
         col_mapper = {n: i for i, n in enumerate(base_cols_norm)}
@@ -123,12 +142,12 @@ def process_passive(file, name, mode):
                 for orig, norm in zip(df.columns, p_cols_norm):
                     if norm in col_mapper: p_aligned.iloc[:, col_mapper[norm]] = df[orig].values
                 
-                # Because "Total" is no longer in df_b_master, p_aligned ONLY has actual brands.
-                # The row sum is naturally mathematically perfect now!
-                row_sums = p_aligned.sum(axis=1).replace(0, 1)
-                
+                # Robust bulletproof matrix multiplication
+                row_sums = p_aligned.sum(axis=1).values
+                row_sums = np.where(row_sums == 0, 1, row_sums) # Prevent divide by zero
                 base_coords = st.session_state.df_b_master[[f'Dim{i+1}' for i in range(max_d)]].values
-                proj = (p_aligned.div(row_sums, axis=0)).values @ base_coords / s
+                
+                proj = (p_aligned.values / row_sums[:, None]) @ base_coords / s
                 shape = 'star'
         else:
             p_idx_norm = normalize_str(pd.Series(df.index))
@@ -137,10 +156,12 @@ def process_passive(file, name, mode):
                 for orig, norm in zip(df.index, p_idx_norm):
                     if norm in row_mapper: p_aligned.iloc[row_mapper[norm], :] = df.loc[orig].values
                 
-                col_sums = p_aligned.sum(axis=0).replace(0, 1)
-                
+                # Robust bulletproof matrix multiplication
+                col_sums = p_aligned.sum(axis=0).values
+                col_sums = np.where(col_sums == 0, 1, col_sums)
                 base_coords = st.session_state.df_a_master[[f'Dim{i+1}' for i in range(max_d)]].values
-                proj = (p_aligned.div(col_sums, axis=1)).T.values @ base_coords / s
+                
+                proj = (p_aligned.values / col_sums[None, :]).T @ base_coords / s
                 shape = 'diamond'
                 
         if proj.size > 0:
@@ -210,10 +231,36 @@ if st.session_state.processed:
     df_a = st.session_state.df_a_master.copy()
     df_a['x'], df_a['y'] = df_a[f'Dim{x_ax}'], df_a[f'Dim{y_ax}']
     
+    # --- VISUAL SETTINGS TOOLBAR ---
+    with st.expander("🎨 Visual & Export Settings", expanded=True):
+        t_col1, t_col2, t_col3, t_col4 = st.columns(4)
+        with t_col1:
+            show_cols = st.checkbox("Show Columns", value=True)
+            col_color = st.color_picker("Column Color", "#1f77b4")
+            col_shape = st.selectbox("Column Shape", ['circle', 'square', 'diamond', 'star'], index=0)
+            col_size = st.slider("Column Dot Size", 5, 30, 16)
+        with t_col2:
+            show_rows = st.checkbox("Show Rows", value=True)
+            row_color = st.color_picker("Row Color", "#d62728")
+            row_shape = st.selectbox("Row Shape", ['circle', 'square', 'diamond', 'star'], index=1)
+            row_size = st.slider("Row Dot Size", 5, 30, 10)
+        with t_col3:
+            lbl_pos = st.selectbox("Label Anchor", ["Radial (Auto-Spread)", "Top", "Bottom", "Right", "Left"])
+            tail_len = st.slider("Connector Line Length", 10, 100, 30)
+            lbl_size = st.slider("Font Size", 8, 24, 12)
+        with t_col4:
+            wrap_len = st.slider("Max Chars Per Line", 15, 100, 35)
+            map_height = st.slider("Canvas Height", 500, 1200, 750, step=50)
+            passive_boost = st.slider("Passive Dot Spread", 1.0, 10.0, 1.5, step=0.5, help="Demographics naturally clump in the center. Use this to violently stretch them outward to make them readable!")
+
+    st.button("🔄 Unhide All Labels", on_click=lambda: st.session_state.update({'hidden_items': []}))
+
     df_p_list = []
     for l in st.session_state.passive_layers:
         p_df = l.copy()
-        p_df['x'], p_df['y'] = p_df[f'Dim{x_ax}'], p_df[f'Dim{y_ax}']
+        # Apply the passive spread boost multiplier!
+        p_df['x'] = p_df[f'Dim{x_ax}'] * passive_boost
+        p_df['y'] = p_df[f'Dim{y_ax}'] * passive_boost
         df_p_list.append(p_df)
 
     if st.session_state.map_rot != 0:
@@ -234,28 +281,6 @@ if st.session_state.processed:
             <div style="font-size:0.85em; color:#666;">(Axis {x_ax}: {v_x:.1f}% | Axis {y_ax}: {v_y:.1f}%)</div>
         </div>
     """, unsafe_allow_html=True)
-
-    with st.expander("🎨 Visual & Export Settings", expanded=True):
-        t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-        with t_col1:
-            show_cols = st.checkbox("Show Columns", value=True)
-            col_color = st.color_picker("Column Color", "#1f77b4")
-            col_shape = st.selectbox("Column Shape", ['circle', 'square', 'diamond', 'star'], index=0)
-            col_size = st.slider("Column Dot Size", 5, 30, 16)
-        with t_col2:
-            show_rows = st.checkbox("Show Rows", value=True)
-            row_color = st.color_picker("Row Color", "#d62728")
-            row_shape = st.selectbox("Row Shape", ['circle', 'square', 'diamond', 'star'], index=1)
-            row_size = st.slider("Row Dot Size", 5, 30, 10)
-        with t_col3:
-            lbl_pos = st.selectbox("Label Anchor", ["Radial (Auto-Spread)", "Top", "Bottom", "Right", "Left"])
-            tail_len = st.slider("Connector Line Length", 10, 100, 30)
-            lbl_size = st.slider("Font Size", 8, 24, 12)
-        with t_col4:
-            wrap_len = st.slider("Max Chars Per Line", 15, 100, 35)
-            map_height = st.slider("Canvas Height", 500, 1200, 750, step=50)
-
-    st.button("🔄 Unhide All Labels", on_click=lambda: st.session_state.update({'hidden_items': []}))
 
     fig = go.Figure()
     annotations = []
