@@ -47,6 +47,7 @@ def rotate_coords(df, angle_deg):
 
 def process_ca(uploaded_file):
     try:
+        uploaded_file.seek(0)
         # Load and clean basic grid
         df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.strip()
@@ -99,6 +100,7 @@ def process_ca(uploaded_file):
 
 def process_passive(file, name, mode):
     try:
+        file.seek(0)
         df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
         df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.strip()
         df = df.set_index(df.columns[0])
@@ -123,9 +125,14 @@ def process_passive(file, name, mode):
                 p_aligned = pd.DataFrame(0.0, index=df.index, columns=st.session_state.df_b_master['Label'])
                 for orig, norm in zip(df.columns, p_cols_norm):
                     if norm in col_mapper: p_aligned.iloc[:, col_mapper[norm]] = df[orig].values
+                
+                # CRITICAL FIX: Ignore the 'Total Market' column so we don't divide by double the count!
+                ignore_cols = p_aligned.columns.astype(str).str.contains("Total|Universe", case=False, regex=True)
+                row_sums = p_aligned.loc[:, ~ignore_cols].sum(axis=1).replace(0, 1)
+                
                 # Project
                 base_coords = st.session_state.df_b_master[[f'Dim{i+1}' for i in range(max_d)]].values
-                proj = (p_aligned.div(p_aligned.sum(axis=1).replace(0,1), axis=0)).values @ base_coords / s
+                proj = (p_aligned.div(row_sums, axis=0)).values @ base_coords / s
                 shape = 'star'
         else:
             p_idx_norm = normalize_str(pd.Series(df.index))
@@ -133,9 +140,14 @@ def process_passive(file, name, mode):
                 p_aligned = pd.DataFrame(0.0, index=st.session_state.df_a_master['Label'], columns=df.columns)
                 for orig, norm in zip(df.index, p_idx_norm):
                     if norm in row_mapper: p_aligned.iloc[row_mapper[norm], :] = df.loc[orig].values
+                
+                # CRITICAL FIX: Ignore any 'Total' rows when finding the column profiles
+                ignore_rows = p_aligned.index.astype(str).str.contains("Total|Universe", case=False, regex=True)
+                col_sums = p_aligned.loc[~ignore_rows, :].sum(axis=0).replace(0, 1)
+                
                 # Project
                 base_coords = st.session_state.df_a_master[[f'Dim{i+1}' for i in range(max_d)]].values
-                proj = (p_aligned.div(p_aligned.sum(axis=0).replace(0,1), axis=1)).T.values @ base_coords / s
+                proj = (p_aligned.div(col_sums, axis=1)).T.values @ base_coords / s
                 shape = 'diamond'
                 
         if proj.size > 0:
