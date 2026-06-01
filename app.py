@@ -4,6 +4,8 @@ import numpy as np
 import plotly.graph_objects as go
 import io
 import textwrap
+import json
+import uuid
 
 # --- CONFIGURATION & STYLING ---
 st.set_page_config(layout="wide", page_title="Custom CA Studio")
@@ -17,6 +19,8 @@ st.markdown("""
         .metric-box { background-color: #f8f9fa; border: 1px solid #e0e0e0; padding: 15px; border-radius: 8px; text-align: center; margin-bottom: 20px;}
         .metric-title { font-size: 0.9em; font-weight: 600; color: #555; text-transform: uppercase;}
         .metric-value { font-size: 1.8em; font-weight: 800; color: #2e7d32; margin: 5px 0;}
+        
+        .sidebar-header { margin-top: 15px; padding-bottom: 5px; border-bottom: 2px solid #eaeaea; font-size: 1.1em; font-weight: bold;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -24,11 +28,75 @@ st.markdown("""
 if 'processed' not in st.session_state: st.session_state.processed = False
 if 'df_b_master' not in st.session_state: st.session_state.df_b_master = pd.DataFrame()
 if 'df_a_master' not in st.session_state: st.session_state.df_a_master = pd.DataFrame()
-if 'passive_layers' not in st.session_state: st.session_state.passive_layers = []
+if 'passive_layers' not in st.session_state: st.session_state.passive_layers = []  # Stores list of dicts: {id, name, df, shape, visible}
 if 'max_dim' not in st.session_state: st.session_state.max_dim = 2
 if 's_vals' not in st.session_state: st.session_state.s_vals = []
 if 'hidden_items' not in st.session_state: st.session_state.hidden_items = []
 if 'map_rot' not in st.session_state: st.session_state.map_rot = 0
+if 'show_base_cols' not in st.session_state: st.session_state.show_base_cols = True
+if 'show_base_rows' not in st.session_state: st.session_state.show_base_rows = True
+
+# --- PROJECT SAVE/LOAD SERIALIZATION ---
+def serialize_project():
+    """Converts the entire session state into a single robust JSON string."""
+    project_data = {
+        "version": "1.2",
+        "processed": st.session_state.processed,
+        "max_dim": st.session_state.max_dim,
+        "s_vals": list(st.session_state.s_vals) if isinstance(st.session_state.s_vals, np.ndarray) else st.session_state.s_vals,
+        "hidden_items": st.session_state.hidden_items,
+        "map_rot": st.session_state.map_rot,
+        "show_base_cols": st.session_state.show_base_cols,
+        "show_base_rows": st.session_state.show_base_rows,
+        "df_b_master": st.session_state.df_b_master.to_dict(orient='split') if not st.session_state.df_b_master.empty else None,
+        "df_a_master": st.session_state.df_a_master.to_dict(orient='split') if not st.session_state.df_a_master.empty else None,
+        "passive_layers": []
+    }
+    for layer in st.session_state.passive_layers:
+        project_data["passive_layers"].append({
+            "id": layer["id"],
+            "name": layer["name"],
+            "shape": layer["shape"],
+            "visible": layer["visible"],
+            "df": layer["df"].to_dict(orient='split')
+        })
+    return json.dumps(project_data, indent=2)
+
+def deserialize_project(json_str):
+    """Restores the session state cleanly from a uploaded JSON string."""
+    try:
+        data = json.loads(json_str)
+        st.session_state.processed = data.get("processed", False)
+        st.session_state.max_dim = data.get("max_dim", 2)
+        st.session_state.s_vals = np.array(data.get("s_vals", []))
+        st.session_state.hidden_items = data.get("hidden_items", [])
+        st.session_state.map_rot = data.get("map_rot", 0)
+        st.session_state.show_base_cols = data.get("show_base_cols", True)
+        st.session_state.show_base_rows = data.get("show_base_rows", True)
+        
+        if data.get("df_b_master"):
+            st.session_state.df_b_master = pd.DataFrame.from_dict(data["df_b_master"], orient='split')
+        else:
+            st.session_state.df_b_master = pd.DataFrame()
+            
+        if data.get("df_a_master"):
+            st.session_state.df_a_master = pd.DataFrame.from_dict(data["df_a_master"], orient='split')
+        else:
+            st.session_state.df_a_master = pd.DataFrame()
+            
+        st.session_state.passive_layers = []
+        for layer_data in data.get("passive_layers", []):
+            st.session_state.passive_layers.append({
+                "id": layer_data["id"],
+                "name": layer_data["name"],
+                "shape": layer_data["shape"],
+                "visible": layer_data["visible"],
+                "df": pd.DataFrame.from_dict(layer_data["df"], orient='split')
+            })
+        return True
+    except Exception as e:
+        st.error(f"Failed to restore project file: {e}")
+        return False
 
 # --- CORE MATH FUNCTIONS ---
 def normalize_str(s_series):
@@ -63,6 +131,7 @@ def process_ca(uploaded_file):
         clean_rows = [r for r in df.index if "unnamed" not in str(r).lower() and str(r).lower() != "nan" and str(r).strip() != ""]
         df = df.loc[clean_rows]
         
+        # Purge any "Total" or "Universe" columns and rows completely
         u_idx_row = df.index.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market|Total", case=False, regex=True)
         u_idx_col = df.columns.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market|Total", case=False, regex=True)
         
@@ -167,10 +236,15 @@ def process_passive(file, name, mode):
         if proj.size > 0:
             res = pd.DataFrame(proj, columns=[f'Dim{k+1}' for k in range(max_d)])
             res['Label'] = df.index if mode == "Rows (Match by Columns)" else df.columns
-            res['LayerName'] = name
-            res['Shape'] = shape
-            res['Visible'] = True
-            return res
+            
+            # Return stable structural layer object
+            return {
+                "id": str(uuid.uuid4())[:8],
+                "name": name,
+                "df": res,
+                "shape": shape,
+                "visible": True
+            }
         return None
     except Exception as e:
         st.error(f"Passive Error on {name}: {e}")
@@ -180,9 +254,33 @@ def process_passive(file, name, mode):
 st.title("🗺️ CA Presentation Studio")
 st.markdown("Upload any raw crosstab grid (Columns = Brands/Groups, Rows = Attributes/Statements). The engine will automatically map the mathematical relationships and prepare them for PowerPoint export.")
 
-# --- SIDEBAR: DATA & MATH ---
+# --- SIDEBAR: STATE & LAYER MANAGERS ---
 with st.sidebar:
-    st.header("📂 1. Core Map Data")
+    st.markdown('<div class="sidebar-header">💾 Save / Load Studio Project</div>', unsafe_allow_html=True)
+    
+    # Exporter
+    if st.session_state.processed:
+        proj_json = serialize_project()
+        st.download_button(
+            label="💾 Download Project File (.castudio)",
+            data=proj_json,
+            file_name="presentation_studio_workspace.castudio",
+            mime="application/json",
+            use_container_width=True
+        )
+    else:
+        st.caption("Perform an analysis or load an existing project to begin.")
+        
+    # Importer
+    load_file = st.file_uploader("📂 Load Project File", type=['castudio', 'json'], help="Upload a previously saved .castudio project to restore your map instantly!")
+    if load_file is not None:
+        if st.button("🔄 Import Workspace", use_container_width=True):
+            loaded_json = load_file.read().decode("utf-8")
+            if deserialize_project(loaded_json):
+                st.success("Project restored!")
+                st.rerun()
+
+    st.markdown('<div class="sidebar-header">📂 1. Core Map Data</div>', unsafe_allow_html=True)
     core_file = st.file_uploader("Upload Base Crosstab", type=['csv', 'xlsx'])
     if core_file:
         if st.button("🚀 Run Analysis", use_container_width=True):
@@ -191,37 +289,46 @@ with st.sidebar:
             process_ca(core_file)
 
     if st.session_state.processed:
-        st.header("⚙️ 2. Map Dimensions")
+        st.markdown('<div class="sidebar-header">👁️ 2. Map Layer Manager</div>', unsafe_allow_html=True)
+        
+        # Unified Base Toggles
+        st.session_state.show_base_cols = st.checkbox("👁️ Base Columns (Brands)", value=st.session_state.show_base_cols)
+        st.session_state.show_base_rows = st.checkbox("👁️ Base Rows (Attributes)", value=st.session_state.show_base_rows)
+        
+        # Stable Passive Layer Interface
+        if st.session_state.passive_layers:
+            st.markdown("**Overlay Layers:**")
+            for i, layer in enumerate(st.session_state.passive_layers):
+                col_tog, col_del = st.columns([4, 1])
+                with col_tog:
+                    # Using permanent ID so list deletions never cause sliding toggle glitch
+                    is_vis = st.checkbox(f"👁️ {layer['name']}", value=layer['visible'], key=f"vis_layer_{layer['id']}")
+                    st.session_state.passive_layers[i]['visible'] = is_vis
+                with col_del:
+                    if st.button("🗑️", key=f"del_l_{layer['id']}", help="Remove Layer"):
+                        st.session_state.passive_layers.pop(i)
+                        st.rerun()
+
+        st.markdown('<div class="sidebar-header">⚙️ 3. Map Dimensions</div>', unsafe_allow_html=True)
         col_x, col_y = st.columns(2)
         with col_x: x_ax = st.selectbox("X-Axis", range(1, st.session_state.max_dim + 1), index=0)
         with col_y: y_ax = st.selectbox("Y-Axis", range(1, st.session_state.max_dim + 1), index=1 if st.session_state.max_dim > 1 else 0)
         
         st.session_state.map_rot = st.slider("Rotate Map (Degrees)", 0, 360, 0, step=90)
         
-        st.header("➕ 3. Passive Layers")
+        st.markdown('<div class="sidebar-header">➕ 4. Add Passive Layers</div>', unsafe_allow_html=True)
         st.caption("Upload supplementary grids to overlay onto the base map.")
         p_file = st.file_uploader("Upload Passive File", type=['csv', 'xlsx'])
         p_name = st.text_input("Layer Name", "New Layer")
         p_mode = st.radio("Align By:", ["Rows (Match by Columns)", "Columns (Match by Rows)"])
         if p_file and st.button("Overlay Layer"):
-            res = process_passive(p_file, p_name, p_mode)
-            if res is not None:
-                st.session_state.passive_layers.append(res)
+            res_dict = process_passive(p_file, p_name, p_mode)
+            if res_dict is not None:
+                st.session_state.passive_layers.append(res_dict)
                 st.success(f"Added {p_name}!")
+                st.rerun()
             else:
                 st.error("Could not align layer. Check your column/row names.")
-                
-        if st.session_state.passive_layers:
-            st.markdown("**Active Layers:**")
-            for i, layer in enumerate(st.session_state.passive_layers):
-                col_tog, col_del = st.columns([4, 1])
-                with col_tog:
-                    is_vis = st.checkbox(f"👁️ {layer['LayerName'].iloc[0]}", value=layer['Visible'].iloc[0], key=f"vis_{i}")
-                    st.session_state.passive_layers[i]['Visible'] = is_vis
-                with col_del:
-                    if st.button("🗑️", key=f"del_l_{i}", help="Remove Layer"):
-                        st.session_state.passive_layers.pop(i)
-                        st.rerun()
 
 # --- MAIN CANVAS ---
 if st.session_state.processed:
@@ -235,12 +342,10 @@ if st.session_state.processed:
     with st.expander("🎨 Visual & Export Settings", expanded=True):
         t_col1, t_col2, t_col3, t_col4 = st.columns(4)
         with t_col1:
-            show_cols = st.checkbox("Show Columns", value=True)
             col_color = st.color_picker("Column Color", "#1f77b4")
             col_shape = st.selectbox("Column Shape", ['circle', 'square', 'diamond', 'star'], index=0)
             col_size = st.slider("Column Dot Size", 5, 30, 16)
         with t_col2:
-            show_rows = st.checkbox("Show Rows", value=True)
             row_color = st.color_picker("Row Color", "#d62728")
             row_shape = st.selectbox("Row Shape", ['circle', 'square', 'diamond', 'star'], index=1)
             row_size = st.slider("Row Dot Size", 5, 30, 10)
@@ -257,10 +362,13 @@ if st.session_state.processed:
 
     df_p_list = []
     for l in st.session_state.passive_layers:
-        p_df = l.copy()
+        p_df = l['df'].copy()
         # Apply the passive spread boost multiplier!
         p_df['x'] = p_df[f'Dim{x_ax}'] * passive_boost
         p_df['y'] = p_df[f'Dim{y_ax}'] * passive_boost
+        p_df['Visible'] = l['visible']
+        p_df['Shape'] = l['shape']
+        p_df['LayerName'] = l['name']
         df_p_list.append(p_df)
 
     if st.session_state.map_rot != 0:
@@ -327,10 +435,11 @@ if st.session_state.processed:
                 visible=True if is_visible else False
             ))
 
-    if show_cols:
+    # Sidebar unified toggles determine rendering behavior
+    if st.session_state.show_base_cols:
         add_layer_to_fig(df_b, col_color, col_shape, col_size, "Columns")
             
-    if show_rows:
+    if st.session_state.show_base_rows:
         add_layer_to_fig(df_a, row_color, row_shape, row_size, "Rows")
     
     p_colors = ['#2ca02c', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
@@ -341,10 +450,19 @@ if st.session_state.processed:
         n = p_df['LayerName'].iloc[0]
         add_layer_to_fig(p_df, c, s, col_size - 2, n)
 
-    all_x = df_b['x'].tolist() + df_a['x'].tolist()
-    all_y = df_b['y'].tolist() + df_a['y'].tolist()
+    # Calculate Axis Bounds
+    all_x = []
+    all_y = []
+    if st.session_state.show_base_cols:
+        all_x.extend(df_b['x'].tolist())
+        all_y.extend(df_b['y'].tolist())
+    if st.session_state.show_base_rows:
+        all_x.extend(df_a['x'].tolist())
+        all_y.extend(df_a['y'].tolist())
     for p in df_p_list:
-        all_x.extend(p['x'].tolist()); all_y.extend(p['y'].tolist())
+        if p['Visible'].iloc[0]:
+            all_x.extend(p['x'].tolist())
+            all_y.extend(p['y'].tolist())
     
     max_val = max(np.max(np.abs(all_x)), np.max(np.abs(all_y))) * 1.15 if all_x else 1
 
@@ -382,4 +500,4 @@ if st.session_state.processed:
             if changed: st.rerun()
 
 else:
-    st.info("👈 Upload a Core Data crosstab in the sidebar to begin building your map.")
+    st.info("👈 Upload a Core Data crosstab or restore a `.castudio` project in the sidebar to begin building your map.")
