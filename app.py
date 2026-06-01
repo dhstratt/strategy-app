@@ -4,7 +4,6 @@ import numpy as np
 import plotly.graph_objects as go
 import io
 import textwrap
-import math
 
 # --- CONFIGURATION & STYLING ---
 st.set_page_config(layout="wide", page_title="Custom CA Studio")
@@ -48,28 +47,25 @@ def rotate_coords(df, angle_deg):
 def process_ca(uploaded_file):
     try:
         uploaded_file.seek(0)
-        # Load and clean basic grid
         df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
         df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.strip()
         df = df.set_index(df.columns[0])
         
-        # Convert to numeric, forcing errors to NaN then 0
         for col in df.columns:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[,$%]', '', regex=True), errors='coerce')
         df = df.fillna(0)
         
-        # Drop "Universe/Total" rows if they exist so they don't anchor the map vertically
-        u_idx = df.index.astype(str).str.contains("Study Universe|Total Population|Grand Total", case=False, regex=True)
-        df_math = df[~u_idx].copy()
+        # Purge any "Total" or "Universe" columns and rows completely
+        u_idx_row = df.index.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market", case=False, regex=True)
+        u_idx_col = df.columns.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market", case=False, regex=True)
         
-        # Drop empty rows
+        df_math = df.loc[~u_idx_row, ~u_idx_col].copy()
         df_math = df_math.loc[(df_math != 0).any(axis=1)]
         
         N = df_math.values
         matrix_sum = N.sum()
         if matrix_sum == 0: return False
         
-        # SVD Math
         P = N / matrix_sum
         r = P.sum(axis=1)
         c = P.sum(axis=0)
@@ -78,19 +74,20 @@ def process_ca(uploaded_file):
         R = (P - E) / np.sqrt(E)
         U, s, Vh = np.linalg.svd(R, full_matrices=False)
         
-        # Save up to 5 dimensions
         st.session_state.max_dim = min(5, len(s))
         st.session_state.s_vals = s
         
         row_coords = (U * s) / np.sqrt(r[:, np.newaxis])
         col_coords = (Vh.T * s) / np.sqrt(c[:, np.newaxis])
         
-        # Store Master Data
-        st.session_state.df_b_master = pd.DataFrame(col_coords[:, :st.session_state.max_dim], columns=[f'Dim{i+1}' for i in range(st.session_state.max_dim)])
-        st.session_state.df_b_master['Label'] = df_math.columns
+        # Store clean Master Data
+        df_b_master = pd.DataFrame(col_coords[:, :st.session_state.max_dim], columns=[f'Dim{i+1}' for i in range(st.session_state.max_dim)])
+        df_b_master['Label'] = df_math.columns.values
+        st.session_state.df_b_master = df_b_master
         
-        st.session_state.df_a_master = pd.DataFrame(row_coords[:, :st.session_state.max_dim], columns=[f'Dim{i+1}' for i in range(st.session_state.max_dim)])
-        st.session_state.df_a_master['Label'] = df_math.index
+        df_a_master = pd.DataFrame(row_coords[:, :st.session_state.max_dim], columns=[f'Dim{i+1}' for i in range(st.session_state.max_dim)])
+        df_a_master['Label'] = df_math.index.values
+        st.session_state.df_a_master = df_a_master
         
         st.session_state.processed = True
         return True
@@ -126,11 +123,10 @@ def process_passive(file, name, mode):
                 for orig, norm in zip(df.columns, p_cols_norm):
                     if norm in col_mapper: p_aligned.iloc[:, col_mapper[norm]] = df[orig].values
                 
-                # CRITICAL FIX: Ignore the 'Total Market' column so we don't divide by double the count!
-                ignore_cols = p_aligned.columns.astype(str).str.contains("Total|Universe", case=False, regex=True)
-                row_sums = p_aligned.loc[:, ~ignore_cols].sum(axis=1).replace(0, 1)
+                # Because "Total" is no longer in df_b_master, p_aligned ONLY has actual brands.
+                # The row sum is naturally mathematically perfect now!
+                row_sums = p_aligned.sum(axis=1).replace(0, 1)
                 
-                # Project
                 base_coords = st.session_state.df_b_master[[f'Dim{i+1}' for i in range(max_d)]].values
                 proj = (p_aligned.div(row_sums, axis=0)).values @ base_coords / s
                 shape = 'star'
@@ -141,11 +137,8 @@ def process_passive(file, name, mode):
                 for orig, norm in zip(df.index, p_idx_norm):
                     if norm in row_mapper: p_aligned.iloc[row_mapper[norm], :] = df.loc[orig].values
                 
-                # CRITICAL FIX: Ignore any 'Total' rows when finding the column profiles
-                ignore_rows = p_aligned.index.astype(str).str.contains("Total|Universe", case=False, regex=True)
-                col_sums = p_aligned.loc[~ignore_rows, :].sum(axis=0).replace(0, 1)
+                col_sums = p_aligned.sum(axis=0).replace(0, 1)
                 
-                # Project
                 base_coords = st.session_state.df_a_master[[f'Dim{i+1}' for i in range(max_d)]].values
                 proj = (p_aligned.div(col_sums, axis=1)).T.values @ base_coords / s
                 shape = 'diamond'
@@ -172,7 +165,7 @@ with st.sidebar:
     core_file = st.file_uploader("Upload Base Crosstab", type=['csv', 'xlsx'])
     if core_file:
         if st.button("🚀 Run Analysis", use_container_width=True):
-            st.session_state.passive_layers = [] # Reset on new core upload
+            st.session_state.passive_layers = [] 
             st.session_state.hidden_items = []
             process_ca(core_file)
 
@@ -211,7 +204,6 @@ with st.sidebar:
 
 # --- MAIN CANVAS ---
 if st.session_state.processed:
-    # Build current view data based on selected axes
     df_b = st.session_state.df_b_master.copy()
     df_b['x'], df_b['y'] = df_b[f'Dim{x_ax}'], df_b[f'Dim{y_ax}']
     
@@ -224,13 +216,11 @@ if st.session_state.processed:
         p_df['x'], p_df['y'] = p_df[f'Dim{x_ax}'], p_df[f'Dim{y_ax}']
         df_p_list.append(p_df)
 
-    # Apply Rotation
     if st.session_state.map_rot != 0:
         df_b = rotate_coords(df_b, st.session_state.map_rot)
         df_a = rotate_coords(df_a, st.session_state.map_rot)
         df_p_list = [rotate_coords(p, st.session_state.map_rot) for p in df_p_list]
 
-    # Calculate Stability
     eig = np.array(st.session_state.s_vals)**2
     tot_var = np.sum(eig)
     v_x = (eig[x_ax-1] / tot_var) * 100
@@ -245,7 +235,6 @@ if st.session_state.processed:
         </div>
     """, unsafe_allow_html=True)
 
-    # --- PRESENTATION TOOLBAR ---
     with st.expander("🎨 Visual & Export Settings", expanded=True):
         t_col1, t_col2, t_col3, t_col4 = st.columns(4)
         with t_col1:
@@ -263,22 +252,17 @@ if st.session_state.processed:
             tail_len = st.slider("Connector Line Length", 10, 100, 30)
             lbl_size = st.slider("Font Size", 8, 24, 12)
         with t_col4:
-            # NEW FEATURE: Base Anchor Highlighter
-            anchor_col = st.selectbox("Highlight Base/Anchor Column (Plots as ⭐️)", ["None"] + sorted(list(df_b['Label'])))
             wrap_len = st.slider("Max Chars Per Line", 15, 100, 35)
             map_height = st.slider("Canvas Height", 500, 1200, 750, step=50)
 
     st.button("🔄 Unhide All Labels", on_click=lambda: st.session_state.update({'hidden_items': []}))
 
-    # --- BUILD FIGURE ---
     fig = go.Figure()
     annotations = []
 
-    # Helper for adding traces
-    def add_layer_to_fig(df_layer, color, shape, size, name, is_anchor=False):
+    def add_layer_to_fig(df_layer, color, shape, size, name):
         if df_layer.empty: return
         
-        # Calculate cluster center for radial spread
         cx = float(df_layer['x'].mean())
         cy = float(df_layer['y'].mean())
         
@@ -290,12 +274,11 @@ if st.session_state.processed:
             elif lbl_pos == "Bottom": ax, ay = 0, tail_len
             elif lbl_pos == "Left": ax, ay = -tail_len, 0
             elif lbl_pos == "Right": ax, ay = tail_len, 0
-            else: # Radial
+            else: 
                 try:
                     dx = float(row['x']) - cx
                     dy = float(row['y']) - cy
                     dist = (dx**2 + dy**2)**0.5
-                    
                     if dist > 1e-5: 
                         ax, ay = (dx/dist)*tail_len, -(dy/dist)*tail_len
                     else: 
@@ -303,39 +286,28 @@ if st.session_state.processed:
                 except Exception:
                     ax, ay = 0, -tail_len
 
-            # Invisible scatter point (for click-to-hide)
             fig.add_trace(go.Scatter(
                 x=[row['x']], y=[row['y']], mode='markers',
-                marker=dict(size=size, symbol=shape, color=color, line=dict(width=1 if not is_anchor else 2, color='white' if not is_anchor else '#333')),
+                marker=dict(size=size, symbol=shape, color=color, line=dict(width=1, color='white')),
                 customdata=[row['Label']], hovertemplate="<b>%{customdata}</b><extra></extra>",
                 name=name, showlegend=False, visible=True if is_visible else False
             ))
             
-            # Draggable annotation (Make anchor text bold and larger)
-            font_dict = dict(size=lbl_size + (4 if is_anchor else 0), color=color, family="Quicksand")
+            font_dict = dict(size=lbl_size, color=color, family="Quicksand")
             annotations.append(dict(
                 x=row['x'], y=row['y'], xref="x", yref="y",
-                text=f"<b>{wrapped_label}</b>" if is_anchor else wrapped_label, 
-                showarrow=True, arrowhead=0, arrowwidth=1 if not is_anchor else 2, arrowcolor=color,
+                text=wrapped_label, 
+                showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor=color,
                 ax=ax, ay=ay, font=font_dict,
                 visible=True if is_visible else False
             ))
 
-    # Add core data, separating out the anchor if one is selected
     if show_cols:
-        if anchor_col != "None":
-            df_b_normal = df_b[df_b['Label'] != anchor_col]
-            df_b_anchor = df_b[df_b['Label'] == anchor_col]
-            add_layer_to_fig(df_b_normal, col_color, col_shape, col_size, "Columns")
-            # Plot the anchor as a giant black star
-            add_layer_to_fig(df_b_anchor, "#111111", "star", col_size + 12, "Base Anchor", is_anchor=True)
-        else:
-            add_layer_to_fig(df_b, col_color, col_shape, col_size, "Columns")
+        add_layer_to_fig(df_b, col_color, col_shape, col_size, "Columns")
             
     if show_rows:
         add_layer_to_fig(df_a, row_color, row_shape, row_size, "Rows")
     
-    # Add passives
     p_colors = ['#2ca02c', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
     for i, p_df in enumerate(df_p_list):
         if p_df.empty or not p_df['Visible'].iloc[0]: continue
@@ -344,7 +316,6 @@ if st.session_state.processed:
         n = p_df['LayerName'].iloc[0]
         add_layer_to_fig(p_df, c, s, col_size - 2, n)
 
-    # --- AXIS LOCKING (CRUCIAL FOR PPT OVERLAYS) ---
     all_x = df_b['x'].tolist() + df_a['x'].tolist()
     all_y = df_b['y'].tolist() + df_a['y'].tolist()
     for p in df_p_list:
@@ -370,13 +341,11 @@ if st.session_state.processed:
 
     st.info("💡 **Instructions:** You can now zoom and pan around the map! Click and drag any text label to un-clutter the map. Click directly on a dot to hide it entirely. Hover over the top right to download a high-res 16:9 PNG for PowerPoint. (Tip: Use the 'Reset Axes' house icon before exporting so your images stack perfectly in PPT!)")
 
-    # Render Chart
     map_event = st.plotly_chart(
         fig, use_container_width=True, config=exp_config,
         on_select="rerun", selection_mode="points", key="main_studio_map"
     )
 
-    # Click-to-Hide Logic
     if map_event and map_event.selection.get("points"):
         clicked_pts = [pt["customdata"] for pt in map_event.selection["points"] if "customdata" in pt]
         if clicked_pts:
@@ -389,5 +358,3 @@ if st.session_state.processed:
 
 else:
     st.info("👈 Upload a Core Data crosstab in the sidebar to begin building your map.")
-
-
