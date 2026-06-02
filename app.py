@@ -38,9 +38,9 @@ if 'show_base_rows' not in st.session_state: st.session_state.show_base_rows = T
 
 # --- PROJECT SAVE/LOAD SERIALIZATION ---
 def serialize_project():
-    """Converts the entire session state into a single robust JSON string."""
+    """Converts the entire session state into a robust JSON string using record format."""
     project_data = {
-        "version": "1.2",
+        "version": "1.3",
         "processed": st.session_state.processed,
         "max_dim": st.session_state.max_dim,
         "s_vals": list(st.session_state.s_vals) if isinstance(st.session_state.s_vals, np.ndarray) else st.session_state.s_vals,
@@ -48,8 +48,8 @@ def serialize_project():
         "map_rot": st.session_state.map_rot,
         "show_base_cols": st.session_state.show_base_cols,
         "show_base_rows": st.session_state.show_base_rows,
-        "df_b_master": st.session_state.df_b_master.to_dict(orient='split') if not st.session_state.df_b_master.empty else None,
-        "df_a_master": st.session_state.df_a_master.to_dict(orient='split') if not st.session_state.df_a_master.empty else None,
+        "df_b_master": st.session_state.df_b_master.to_dict(orient='records') if not st.session_state.df_b_master.empty else None,
+        "df_a_master": st.session_state.df_a_master.to_dict(orient='records') if not st.session_state.df_a_master.empty else None,
         "passive_layers": []
     }
     for layer in st.session_state.passive_layers:
@@ -58,12 +58,12 @@ def serialize_project():
             "name": layer["name"],
             "shape": layer["shape"],
             "visible": layer["visible"],
-            "df": layer["df"].to_dict(orient='split')
+            "df": layer["df"].to_dict(orient='records')
         })
     return json.dumps(project_data, indent=2)
 
 def deserialize_project(json_str):
-    """Restores the session state cleanly from a uploaded JSON string."""
+    """Restores the session state gracefully, patching older versions dynamically."""
     try:
         data = json.loads(json_str)
         st.session_state.processed = data.get("processed", False)
@@ -74,24 +74,27 @@ def deserialize_project(json_str):
         st.session_state.show_base_cols = data.get("show_base_cols", True)
         st.session_state.show_base_rows = data.get("show_base_rows", True)
         
-        if data.get("df_b_master"):
-            st.session_state.df_b_master = pd.DataFrame.from_dict(data["df_b_master"], orient='split')
-        else:
-            st.session_state.df_b_master = pd.DataFrame()
+        # Helper to rebuild DataFrames safely regardless of version format
+        def load_df(df_data):
+            if not df_data: 
+                return pd.DataFrame()
+            # If the user uploads an older V1.2 "split" format, adapt it dynamically
+            if isinstance(df_data, dict) and "columns" in df_data and "data" in df_data:
+                return pd.DataFrame(**df_data)
+            # If it is the new, clean V1.3 "records" list format
+            return pd.DataFrame(df_data)
             
-        if data.get("df_a_master"):
-            st.session_state.df_a_master = pd.DataFrame.from_dict(data["df_a_master"], orient='split')
-        else:
-            st.session_state.df_a_master = pd.DataFrame()
-            
+        st.session_state.df_b_master = load_df(data.get("df_b_master"))
+        st.session_state.df_a_master = load_df(data.get("df_a_master"))
+        
         st.session_state.passive_layers = []
         for layer_data in data.get("passive_layers", []):
             st.session_state.passive_layers.append({
-                "id": layer_data["id"],
+                "id": layer_data.get("id", str(uuid.uuid4())[:8]),
                 "name": layer_data["name"],
                 "shape": layer_data["shape"],
                 "visible": layer_data["visible"],
-                "df": pd.DataFrame.from_dict(layer_data["df"], orient='split')
+                "df": load_df(layer_data["df"])
             })
         return True
     except Exception as e:
