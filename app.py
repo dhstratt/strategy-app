@@ -135,8 +135,8 @@ def process_ca(uploaded_file):
         df = df.loc[clean_rows]
         
         # Purge any "Total" or "Universe" columns and rows completely
-        u_idx_row = df.index.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market|Total", case=False, regex=True)
-        u_idx_col = df.columns.astype(str).str.contains("Study Universe|Total Population|Grand Total|Total Market|Total", case=False, regex=True)
+        u_idx_row = df.index.astype(str).str.strip().str.contains(r"^(?:Study Universe|Total Population|Grand Total|Total Market|Total)$", case=False, regex=True)
+        u_idx_col = df.columns.astype(str).str.strip().str.contains(r"^(?:Study Universe|Total Population|Grand Total|Total Market|Total)$", case=False, regex=True)
         
         df_math = df.loc[~u_idx_row, ~u_idx_col].copy()
         df_math = df_math.loc[(df_math != 0).any(axis=1)]
@@ -195,6 +195,11 @@ def process_passive(file, name, mode):
         df = df[clean_cols]
         clean_rows = [r for r in df.index if "unnamed" not in str(r).lower() and str(r).lower() != "nan" and str(r).strip() != ""]
         df = df.loc[clean_rows]
+        
+        # Purge "Total" rows/cols from passive layers so they don't plot as ghost dots!
+        u_idx_row = df.index.astype(str).str.strip().str.contains(r"^(?:Study Universe|Total Population|Grand Total|Total Market|Total)$", case=False, regex=True)
+        u_idx_col = df.columns.astype(str).str.strip().str.contains(r"^(?:Study Universe|Total Population|Grand Total|Total Market|Total)$", case=False, regex=True)
+        df = df.loc[~u_idx_row, ~u_idx_col].copy()
         
         base_cols_norm = normalize_str(st.session_state.df_b_master['Label'])
         base_idx_norm = normalize_str(st.session_state.df_a_master['Label'])
