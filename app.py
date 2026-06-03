@@ -6,6 +6,7 @@ import io
 import textwrap
 import json
 import uuid
+import re
 
 # --- CONFIGURATION & STYLING ---
 st.set_page_config(layout="wide", page_title="Custom CA Studio")
@@ -101,6 +102,71 @@ def deserialize_project(json_str):
         st.error(f"Failed to restore project file: {e}")
         return False
 
+# --- ENTERPRISE HEADER DETECTOR & SANITIZER ---
+def clean_header_formatting(s):
+    """Strips trailing carriage returns, hyphens, or underscores commonly exported by survey platforms."""
+    if pd.isna(s):
+         return ""
+    # Split by newline (like "Simply\n-----------") and take the first clean part
+    s_str = str(s).split('\n')[0].strip()
+    # Strip trailing punctuation artifacts
+    return s_str.rstrip('-_= ')
+
+def detect_header_row(file_buffer, file_is_csv, expected_labels=None):
+    """Heuristically scans the first 15 rows of a dirty spreadsheet to find where the table headers actually start."""
+    file_buffer.seek(0)
+    try:
+        if file_is_csv:
+            df_raw = pd.read_csv(file_buffer, header=None, nrows=15)
+        else:
+            df_raw = pd.read_excel(file_buffer, header=None, nrows=15)
+    except Exception:
+        file_buffer.seek(0)
+        return 0
+    finally:
+        file_buffer.seek(0)
+
+    best_row_idx = 0
+    max_score = -1000
+
+    labels_set = set()
+    if expected_labels is not None:
+        for lbl in expected_labels:
+            clean = re.sub(r'[^\w\s]', '', str(lbl)).lower().replace(' ', '').strip()
+            labels_set.add(clean)
+
+    for idx, row in df_raw.iterrows():
+        matches = 0
+        non_empty = 0
+        strings_count = 0
+        numbers_count = 0
+        
+        for cell in row:
+            if pd.isna(cell) or str(cell).strip() == "":
+                continue
+            non_empty += 1
+            
+            # Remove formatting punctuation to verify if numeric
+            cell_clean = str(cell).strip().replace(',', '').replace('%', '').replace('$', '')
+            try:
+                float(cell_clean)
+                numbers_count += 1
+            except ValueError:
+                strings_count += 1
+                cell_norm = re.sub(r'[^\w\s]', '', cell_clean).lower().replace(' ', '').strip()
+                if expected_labels is not None and cell_norm in labels_set:
+                    matches += 10
+                elif any(k in cell_norm for k in ['total', 'brand', 'attribute', 'statement', 'demographic', 'segment', 'universe', 'respondent']):
+                    matches += 2
+
+        # SCORING ALGORITHM: Header rows have high string counts, near-zero numbers, and many non-empty columns
+        score = matches + strings_count - (2.0 * numbers_count) + (0.1 * non_empty)
+        if score > max_score and non_empty > 2:
+            max_score = score
+            best_row_idx = idx
+
+    return best_row_idx
+
 # --- CORE MATH FUNCTIONS ---
 def normalize_str(s_series):
     # Aggressively strips ALL punctuation and ALL whitespace so column mapping never fails
@@ -119,7 +185,18 @@ def rotate_coords(df, angle_deg):
 def process_ca(uploaded_file):
     try:
         uploaded_file.seek(0)
-        df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+        file_is_csv = uploaded_file.name.endswith('.csv')
+        
+        # Detect the true header row
+        header_row_idx = detect_header_row(uploaded_file, file_is_csv)
+        
+        uploaded_file.seek(0)
+        df = pd.read_csv(uploaded_file, header=header_row_idx) if file_is_csv else pd.read_excel(uploaded_file, header=header_row_idx)
+        
+        # Sanitize formatting artifacts from the headers
+        df.columns = [clean_header_formatting(c) for c in df.columns]
+        df.iloc[:, 0] = df.iloc[:, 0].apply(clean_header_formatting)
+        
         df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.strip()
         df = df.set_index(df.columns[0])
         
@@ -182,7 +259,25 @@ def process_ca(uploaded_file):
 def process_passive(file, name, mode):
     try:
         file.seek(0)
-        df = pd.read_csv(file) if file.name.endswith('.csv') else pd.read_excel(file)
+        file_is_csv = file.name.endswith('.csv')
+        
+        # Match against active base coordinates for 100% precision header matching
+        expected_labels = []
+        if not st.session_state.df_b_master.empty:
+            expected_labels.extend(st.session_state.df_b_master['Label'].tolist())
+        if not st.session_state.df_a_master.empty:
+            expected_labels.extend(st.session_state.df_a_master['Label'].tolist())
+            
+        # Detect the true header row
+        header_row_idx = detect_header_row(file, file_is_csv, expected_labels)
+        
+        file.seek(0)
+        df = pd.read_csv(file, header=header_row_idx) if file_is_csv else pd.read_excel(file, header=header_row_idx)
+        
+        # Sanitize formatting artifacts from the headers
+        df.columns = [clean_header_formatting(c) for c in df.columns]
+        df.iloc[:, 0] = df.iloc[:, 0].apply(clean_header_formatting)
+        
         df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.strip()
         df = df.set_index(df.columns[0])
         for col in df.columns:
